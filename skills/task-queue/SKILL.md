@@ -12,7 +12,7 @@ Once this is set up, you log your own work in the user's Task Queue queue:
 - **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes.
 - **When the work is finished:** you mark the task done as your last step, which records the end date and time.
 
-Every prompt reminds you whether a task is open, and gives you the exact commands to run. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
+Every prompt reminds you whether a task is open, and gives you the exact commands to run. The plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
 
 Setup and settings use the bundled tracker:
 
@@ -33,9 +33,8 @@ Do these in order when tracking isn't set up, or when the user asks to set it up
 2. **Run `setup --url <url> --key <key>`.** It checks the key, saves the settings, and puts a copy of the tracker at `~/.task-queue/tq.mjs`, the path your start and done commands use. Never repeat the key back or write it anywhere else.
 3. **If setup asks for a workspace**, show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
 4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
-5. **Ask whether Claude Code may run the tracker without asking each time.** Otherwise every start and done waits for approval. If they agree, run `allow`. It adds one rule to `~/.claude/settings.json` that covers only this tracker's commands.
-6. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
-7. **Run `status`** and tell the user tracking is on.
+5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
+6. **Run `status`** and tell the user tracking is on.
 
 If the user says they don't want tracking, run `disable`. That stops the tracking and the setup reminder at the start of each session.
 
@@ -50,8 +49,6 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set idle <minutes>` | How long a conversation may sit idle before its open task is closed (default 60) |
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
-| `allow` | Let Claude Code run the tracker without asking |
-
 ## When tracking fails
 
 If `start` or `done` fails, tell the user once, in a sentence, and carry on with their request. Don't retry the tracking by hand. `status` and `~/.task-queue/tracker.log` show what went wrong. These are the usual causes:

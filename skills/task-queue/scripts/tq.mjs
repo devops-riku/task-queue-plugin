@@ -12,11 +12,13 @@
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
- *   allow                        Lets Claude Code run this tracker without asking each time.
  *   start [--session <id>] --estimate <minutes> "<title>"   Open and start a task.
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
- *   hook <prompt|stop|session-start|session-end>             Hook entry points: JSON on stdin, never fail.
+ *   hook <prompt|stop|session-start|session-end|approve>     Hook entry points: JSON on stdin, never fail.
+ *
+ * Once the plugin is enabled the agent never has to ask before running the tracker: a PreToolUse hook
+ * approves exactly one run of it, with nothing chained, piped, redirected or substituted.
  *
  * Settings live in ~/.task-queue/config.json (TASK_QUEUE_HOME moves the folder), with a copy of this script
  * at ~/.task-queue/tq.mjs so the commands have a stable path. The environment variables TASK_QUEUE_URL,
@@ -50,7 +52,6 @@ const MANUAL = 'manual';
 /** How the agent runs this tracker: the stable copy, quoted only when the path needs it. */
 const STABLE_POSIX = STABLE.replace(/\\/g, '/');
 const COMMAND = /\s/.test(STABLE_POSIX) ? `node "${STABLE_POSIX}"` : `node ${STABLE_POSIX}`;
-const ALLOW_RULE = `Bash(${COMMAND}:*)`;
 
 // ------------------------------------------------------------------ files
 
@@ -98,6 +99,41 @@ function syncStableCopy() {
   } catch (err) {
     log('sync', `failed: ${err.message}`);
   }
+}
+
+/** This tracker's paths, as compared: the stable copy and the plugin's own (setup and status run from it). */
+const TRACKERS = [STABLE, fileURLToPath(import.meta.url)].map((p) => path.resolve(p).replace(/\\/g, '/').toLowerCase());
+
+/** Whether a shell command (Bash or PowerShell) is exactly one run of this tracker: `node <tracker> <args>`,
+ * with nothing chained, piped, redirected, substituted or escaped, so approving it can't approve anything else.
+ * Anything doubtful returns false and goes through Claude Code's normal permission check instead. */
+function isTrackerCommand(command) {
+  const tokens = [];
+  let token = null;
+  let quote = null;
+  for (const ch of String(command ?? '').trim()) {
+    // Never inside or outside quotes: newlines, escapes, and $ or backtick substitution (both shells).
+    if ('\r\n\\`$'.includes(ch)) return false;
+    if (quote) {
+      if (ch === quote) quote = null;
+      else token += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      token ??= '';
+    } else if (/\s/.test(ch)) {
+      if (token !== null) tokens.push(token);
+      token = null;
+    } else if (';&|<>(){}'.includes(ch)) {
+      return false; // chaining, pipes, redirects, subshells and PowerShell's (…) arguments
+    } else {
+      token = (token ?? '') + ch;
+    }
+  }
+  if (quote) return false;
+  if (token !== null) tokens.push(token);
+  if (!/^node(\.exe)?$/i.test(tokens[0] ?? '') || !tokens[1]) return false;
+  const target = path.resolve(tokens[1].replace(/^~(?=\/)/, os.homedir())).replace(/\\/g, '/').toLowerCase();
+  return TRACKERS.includes(target);
 }
 
 const stateFile = (session) => path.join(SESSIONS, `${String(session).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`);
@@ -290,6 +326,20 @@ function guidance(session, task) {
 }
 
 const HOOKS = {
+  /** Before a shell command: approve a run of this tracker, so the agent never stops to ask for it. */
+  async approve(input) {
+    if (!['Bash', 'PowerShell'].includes(input.tool_name) || !isTrackerCommand(input.tool_input?.command)) return;
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          permissionDecisionReason: 'Task Queue tracker command, approved by the task-queue plugin.',
+        },
+      }),
+    );
+  },
+
   /** A prompt: remember it (it becomes the task's description, or a note on the open task) and brief the agent. */
   async prompt(input, s) {
     if (!s.enabled || !ready(s)) return;
@@ -435,11 +485,6 @@ function settle(s, me, flags = {}) {
   return { addable, workspace, changes };
 }
 
-function allowed() {
-  const settings = readJson(path.join(os.homedir(), '.claude', 'settings.json'));
-  return Boolean(settings?.permissions?.allow?.includes(ALLOW_RULE));
-}
-
 function summary(s, extra = []) {
   out(
     `Tracking: ${!s.enabled ? 'off (disabled)' : ready(s) ? 'on' : 'not set up yet'}`,
@@ -450,7 +495,7 @@ function summary(s, extra = []) {
     `Estimates: the agent's own, per task (${s.estimate} minutes if it gives none)`,
     `Idle limit: ${s.idle} minutes, after which an open task is closed at the agent's last reply`,
     `Prompt text sent: ${s.promptText ? 'yes (the request as the description, follow-up prompts as notes, the final reply as the note when not marked done)' : 'no'}`,
-    `Claude Code runs the tracker without asking: ${allowed() ? 'yes' : `no (run: ${COMMAND} allow)`}`,
+    'Approvals: none needed (the plugin approves its own tracker commands)',
     ...extra,
   );
 }
@@ -542,19 +587,6 @@ const COMMANDS = {
     summary(saveSettings({ enabled: false }));
   },
 
-  /** Adds the tracker to Claude Code's allowed commands, so its start and done never wait for approval. */
-  async allow() {
-    syncStableCopy();
-    const file = path.join(os.homedir(), '.claude', 'settings.json');
-    const settings = fs.existsSync(file) ? readJson(file) : {};
-    if (settings === null) fail(`${file} isn't valid JSON, so it was left alone. Add "${ALLOW_RULE}" to permissions.allow by hand.`);
-    settings.permissions ??= {};
-    settings.permissions.allow ??= [];
-    if (!settings.permissions.allow.includes(ALLOW_RULE)) settings.permissions.allow.push(ALLOW_RULE);
-    writeJson(file, settings);
-    out(`Claude Code now runs the tracker without asking: added ${ALLOW_RULE} to ${file}.`);
-  },
-
   async start({ rest, flags }) {
     const s = loadSettings();
     if (!ready(s)) fail('Not set up: run setup --url <API URL> --key <API key> --category <VALUE> first.');
@@ -617,7 +649,7 @@ COMMANDS.finish = COMMANDS.done;
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, allow, start, note, done, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, start, note, done, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);

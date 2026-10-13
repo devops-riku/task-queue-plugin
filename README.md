@@ -45,8 +45,9 @@ Start a new session. The plugin notices it isn't set up yet, and Claude asks you
 Then Claude asks:
 
 - which workspace to use, if you're in several;
-- which category the tasks go under;
-- whether it may run the tracker without asking you each time. If you say yes, one rule is added to `~/.claude/settings.json`, and it covers only this tracker.
+- which category the tasks go under.
+
+That's the only time it asks. Once the plugin is enabled, Claude never stops to ask permission for the tracker: the plugin approves its own commands. It approves exactly one run of the tracker, with nothing chained, piped or substituted. Any other command goes through Claude Code's normal permission check.
 
 You can also start setup yourself: say "set up Task Queue tracking", or run `/task-queue:task-queue setup`. To keep the key out of the chat, run the script yourself with `!`:
 
@@ -88,7 +89,6 @@ Ask Claude to run these, or run `node ~/.task-queue/tq.mjs <command>` yourself (
 | `setup --url <url> --key <key> [--workspace <id>] [--category <VALUE>]` | Connects and checks the key |
 | `status` | Shows your settings, whether Task Queue answers, open tasks and recent log lines |
 | `enable` / `disable` | Turns tracking on or off; your settings are kept |
-| `allow` | Lets Claude Code run the tracker without asking |
 | `workspaces` | Lists the workspaces you can add tasks to, with their categories |
 | `set workspace <id>` / `set category <VALUE>` | Sets where tasks go |
 | `set idle <minutes>` | Sets how long a conversation may sit idle before its open task is closed (default 60) |
@@ -102,7 +102,6 @@ These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK
 
 1. Run `/plugin uninstall task-queue@task-queue-skill`.
 2. Delete the `~/.task-queue` folder.
-3. If you ran `allow`, remove its rule from `~/.claude/settings.json`.
 
 ## Other agents
 

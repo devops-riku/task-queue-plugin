@@ -9,7 +9,7 @@
       "name": "task-queue",
       "source": ".",
       "description": "Claude logs its own work as Task Queue tasks, with its estimate and the start and end time.",
-      "version": "1.1.0"
+      "version": "1.2.0"
     }
   ]
 }
