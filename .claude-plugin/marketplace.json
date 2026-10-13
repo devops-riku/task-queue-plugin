@@ -1,13 +1,15 @@
 {
   "name": "task-queue-skill",
-  "owner": { "name": "devops-riku" },
-  "description": "Task Queue tools for Claude Code: track every request as a task with its start and end time.",
+  "owner": {
+    "name": "devops-riku"
+  },
+  "description": "Task Queue tools for Claude Code: Claude logs its work as tasks with its estimate and the start and end time.",
   "plugins": [
     {
       "name": "task-queue",
       "source": ".",
-      "description": "Logs every request you give Claude Code as a task in your Task Queue account, with its start and end time.",
-      "version": "1.0.0"
+      "description": "Claude logs its own work as Task Queue tasks, with its estimate and the start and end time.",
+      "version": "1.1.0"
     }
   ]
 }

@@ -1,18 +1,19 @@
 # Task Queue tracker for AI coding agents
 
-This logs every request you give an AI coding agent as a task in your own [Task Queue](https://github.com/devops-riku/task-queue) queue:
+Your AI coding agent logs its own work as tasks in your Task Queue queue:
 
-- **When you send the request**, a task is created in your queue and started.
-- **When the agent finishes replying**, the task is completed, with its final reply as the completion note.
+- **New work:** the agent opens a task with its own estimate of how long it needs, before it starts.
+- **Follow-up prompts on the same work:** these stay on that task as notes, instead of creating new tasks.
+- **When the work is finished:** the agent marks the task done, which records the end date and time.
 
-Admins see these tasks like any other work: who did what, when, and for how long.
+Admins see these tasks like any other work: what was done, when it was done, and how the time compared with the estimate. Overtime reports add up those estimates, so it's how much work there was that counts, not how many prompts were sent.
 
 **What's in this repo:**
 
-| Path | Agent | What it is |
-|------|-------|------------|
-| `.claude-plugin/`, `hooks/`, `skills/task-queue/` | Claude Code | A plugin. Its hooks track every request on their own, and its `task-queue` skill handles setup. |
-| `agent-rules/AGENTS.md` | Every other agent (Codex, Cursor, Gemini CLI, Copilot, …) | Rules that make the agent open a Task Queue task before doing anything else, and close it when it's done. |
+| Path | For | What it is |
+|------|-----|------------|
+| `.claude-plugin/`, `hooks/`, `skills/task-queue/` | Claude Code | A plugin. Its hooks brief Claude on every prompt and close anything left open; its `task-queue` skill handles setup. |
+| `agent-rules/AGENTS.md` | Every other agent (Codex, Cursor, Gemini CLI, Copilot, …) | Rules that make the agent open a task before doing anything else, and mark it done when the work is finished. |
 | `skills/task-queue/scripts/tq.mjs` | Both | The tracker itself. Node 18 or later, no dependencies. |
 
 ## Before you start
@@ -34,8 +35,6 @@ Inside Claude Code:
 /plugin install task-queue@task-queue-skill
 ```
 
-This repository is private, so you need read access to it on GitHub, and git has to be signed in to GitHub on your machine (for example with `gh auth login`).
-
 ### Set up
 
 Start a new session. The plugin notices it isn't set up yet, and Claude asks you for:
@@ -43,7 +42,11 @@ Start a new session. The plugin notices it isn't set up yet, and Claude asks you
 1. your Task Queue API URL, e.g. `http://localhost:8000/api/v1`. The Personal API link from your profile works too.
 2. your personal API key.
 
-Then Claude asks which workspace (if you're in several) and which category tracked requests go under.
+Then Claude asks:
+
+- which workspace to use, if you're in several;
+- which category the tasks go under;
+- whether it may run the tracker without asking you each time. If you say yes, one rule is added to `~/.claude/settings.json`, and it covers only this tracker.
 
 You can also start setup yourself: say "set up Task Queue tracking", or run `/task-queue:task-queue setup`. To keep the key out of the chat, run the script yourself with `!`:
 
@@ -51,61 +54,64 @@ You can also start setup yourself: say "set up Task Queue tracking", or run `/ta
 ! node "<plugin folder>/skills/task-queue/scripts/tq.mjs" setup --url http://localhost:8000/api/v1 --key tqk_… --category FEATURE
 ```
 
-### What gets logged
+### How it works
 
-Every request you type is logged, except slash commands. For each one:
+Every prompt you send comes with a short note for Claude. It says whether a task is open, and gives the exact commands to run.
 
-| Field | Value |
-|-------|-------|
-| Title | The first line of your request |
-| Description | Your full request, plus the project folder and the session id |
-| Category | The one you chose |
-| Estimate | 30 minutes, unless you change it. Task Queue needs an estimate before a task can start. A fixed estimate skews the overtime reports, so set one close to how long your requests usually take. |
-| Started | When you sent the request (the moment Task Queue queued the task) |
-| Completed | When Claude finished replying, with its final reply as the completion note |
+| When | What happens in Task Queue |
+|------|----------------------------|
+| You ask for new work | Claude runs `start` with a title and its estimate. A task is created in your queue and started. Your request is its description. |
+| You follow up on the same work | Your follow-up is added to the open task as a note |
+| You ask for something unrelated | Claude runs `start` for the new work. The previous task is closed at the time Claude last finished replying. |
+| Claude finishes the work | Claude runs `done` with a one-line summary. The task is completed with the end date and time. |
+| You ask a quick question or say thanks | Nothing |
 
-Some requests don't end with a reply:
+Claude might not mark a task done. The plugin closes it anyway, at the time Claude last finished replying, and notes that it wasn't marked done. That happens in three cases:
 
-- **You send a new request while the last one is still open** (for example after pressing Esc). The open task is completed first.
-- **You quit the session.** Anything still open is completed.
+- the conversation sits idle for 60 minutes;
+- the conversation ends (exit or `/clear`);
+- the terminal was closed and the conversation never ended. The next session you start cleans these up after 12 hours.
 
-Tracking never blocks you. If Task Queue is down or the key stops working, your request goes through as usual. Claude mentions the problem once, and the details go to `~/.task-queue/tracker.log`.
+Tracking never blocks you. If Task Queue is down or the key stops working, Claude tells you once and carries on. The details go to `~/.task-queue/tracker.log`.
 
 ### Privacy
 
-- **The text of your requests and Claude's final replies goes to Task Queue, where admins can read it.** Don't paste secrets into requests while tracking is on. To send a generic title and no text instead, run `set prompt-text off`.
-- **Your settings and key stay on your machine**, in `~/.task-queue/config.json`. Set `TASK_QUEUE_HOME` to keep that folder somewhere else. The key is never printed: `status` shows only its first characters.
+- **Your request and your follow-up prompts go to Task Queue, where admins can read them,** along with Claude's titles and summaries. Don't paste secrets into requests while tracking is on. Run `set prompt-text off` to keep your prompts out; titles and summaries are still sent.
+- **Your settings and key stay on your machine,** in `~/.task-queue/config.json`. Set `TASK_QUEUE_HOME` to keep that folder somewhere else. The key is never printed: `status` shows only its first characters.
 
 ### Commands
 
-Ask Claude to run these, or run `node <plugin folder>/skills/task-queue/scripts/tq.mjs <command>` yourself.
+Ask Claude to run these, or run `node ~/.task-queue/tq.mjs <command>` yourself (in PowerShell, write `$HOME` instead of `~`).
 
 | Command | What it does |
 |---------|--------------|
-| `setup --url <url> --key <key> [--workspace <id>] [--category <VALUE>] [--estimate <minutes>]` | Connects and checks the key |
+| `setup --url <url> --key <key> [--workspace <id>] [--category <VALUE>]` | Connects and checks the key |
 | `status` | Shows your settings, whether Task Queue answers, open tasks and recent log lines |
 | `enable` / `disable` | Turns tracking on or off; your settings are kept |
+| `allow` | Lets Claude Code run the tracker without asking |
 | `workspaces` | Lists the workspaces you can add tasks to, with their categories |
-| `set workspace <id>` / `set category <VALUE>` | Sets where tracked requests go |
-| `set estimate <minutes>` | Sets the estimate each request is logged with |
-| `set prompt-text on\|off` | Sets whether request text and replies are sent |
-| `start "<title>"` / `finish ["<note>"]` | Opens or completes a task by hand |
+| `set workspace <id>` / `set category <VALUE>` | Sets where tasks go |
+| `set idle <minutes>` | Sets how long a conversation may sit idle before its open task is closed (default 60) |
+| `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30) |
+| `set prompt-text on\|off` | Sets whether your prompts are sent |
+| `start --estimate <minutes> "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand |
 
-These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE`, `TASK_QUEUE_CATEGORY` and `TASK_QUEUE_ESTIMATE`.
+These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 
 ### Uninstall
 
 1. Run `/plugin uninstall task-queue@task-queue-skill`.
 2. Delete the `~/.task-queue` folder.
+3. If you ran `allow`, remove its rule from `~/.claude/settings.json`.
 
 ## Other agents
 
-Agents without Claude Code's hooks can't be tracked automatically, so `agent-rules/AGENTS.md` makes tracking a hard rule instead. Before doing anything else on a request, the agent opens and starts a task. When it's done, it completes the task. If it can't open the task, it stops and asks you.
+Agents without Claude Code's hooks follow `agent-rules/AGENTS.md`. Before doing anything else on new work, the agent opens a task with its estimate. It marks the task done when the work is finished. If it can't open a task, it stops and asks you.
 
 1. Clone this repository.
 2. Run setup once:
    `node <clone>/skills/task-queue/scripts/tq.mjs setup --url <url> --key <key> --category <VALUE>`
+   This also installs the tracker at `~/.task-queue/tq.mjs`, the path the rules use.
 3. Copy `agent-rules/AGENTS.md` into your project, under the file name your agent reads. The table at the end of the file lists them.
-4. In the copy, replace `<path to task-queue-skill>` with the path to your clone.
 
 Agents that can't run Node can follow the plain-HTTP steps in the same file instead.

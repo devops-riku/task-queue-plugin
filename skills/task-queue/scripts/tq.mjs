@@ -1,34 +1,56 @@
 #!/usr/bin/env node
 /**
- * Task Queue tracker: logs each request you give an AI coding agent as a task in your own Task Queue
- * queue, started when you send it and completed when the agent finishes, so admins can see the work.
+ * Task Queue tracker: the AI coding agent logs its own work as tasks in your Task Queue queue, so admins
+ * can see it. When a request is new work, the agent opens a task with its own estimate of how long it
+ * needs (`start`), and when the work is finished it completes the task with the end date and time
+ * (`done`). Follow-up prompts on the same work are added to the open task as notes.
  *
- *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>] [--estimate <minutes>]
- *   set <workspace|category|estimate|prompt-text> <value>
- *   workspaces                    Workspaces you can add tasks to, with their categories.
- *   status | enable | disable
- *   start "<title>" [--description <text>] [--session <id>]   Open and start a task by hand.
- *   finish ["<note>"] [--session <id>]                          Complete the task opened with start.
- *   hook <prompt|stop|session-start|session-end>              Hook entry points: JSON on stdin, never fail.
+ * In Claude Code the plugin's hooks keep the agent informed (every prompt says whether a task is open and
+ * what to run) and close what it leaves open: a conversation idle past the idle limit, one that ends
+ * (exit, /clear), or one abandoned without ending, at the time the agent last finished replying.
  *
- * Settings live in ~/.task-queue/config.json (TASK_QUEUE_HOME moves the folder). The environment variables
- * TASK_QUEUE_URL, TASK_QUEUE_API_KEY, TASK_QUEUE_WORKSPACE, TASK_QUEUE_CATEGORY and TASK_QUEUE_ESTIMATE
- * override it. No dependencies: Node 18 or later.
+ *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
+ *   set <workspace|category|estimate|idle|prompt-text> <value>
+ *   workspaces | status | enable | disable
+ *   allow                        Lets Claude Code run this tracker without asking each time.
+ *   start [--session <id>] --estimate <minutes> "<title>"   Open and start a task.
+ *   note [--session <id>] "<text>"                           Add a note to the open task.
+ *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
+ *   hook <prompt|stop|session-start|session-end>             Hook entry points: JSON on stdin, never fail.
+ *
+ * Settings live in ~/.task-queue/config.json (TASK_QUEUE_HOME moves the folder), with a copy of this script
+ * at ~/.task-queue/tq.mjs so the commands have a stable path. The environment variables TASK_QUEUE_URL,
+ * TASK_QUEUE_API_KEY, TASK_QUEUE_WORKSPACE and TASK_QUEUE_CATEGORY override the settings. No dependencies:
+ * Node 18 or later.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const HOME = process.env.TASK_QUEUE_HOME || path.join(os.homedir(), '.task-queue');
 const CONFIG = path.join(HOME, 'config.json');
 const SESSIONS = path.join(HOME, 'sessions');
 const LOG = path.join(HOME, 'tracker.log');
+const STABLE = path.join(HOME, 'tq.mjs');
 const TIMEOUT_MS = 5000;
+// Used when `start` is given no estimate.
 const DEFAULT_ESTIMATE = 30;
+const MAX_ESTIMATE = 60 * 24 * 365;
+// Minutes a conversation may sit idle with a task open; the next prompt after that closes it.
+const DEFAULT_IDLE = 60;
+// Conversations that never ended properly (a closed terminal) are closed by the next session after this.
+const ABANDONED_MS = 12 * 60 * 60 * 1000;
 const TITLE_MAX = 200;
 const PROMPT_MAX = 19000; // the description takes 20,000 characters; the rest is the footer
+const COMMENT_MAX = 5000;
 const NOTE_MAX = 4000;
 const MANUAL = 'manual';
+
+/** How the agent runs this tracker: the stable copy, quoted only when the path needs it. */
+const STABLE_POSIX = STABLE.replace(/\\/g, '/');
+const COMMAND = /\s/.test(STABLE_POSIX) ? `node "${STABLE_POSIX}"` : `node ${STABLE_POSIX}`;
+const ALLOW_RULE = `Bash(${COMMAND}:*)`;
 
 // ------------------------------------------------------------------ files
 
@@ -64,7 +86,25 @@ function log(event, message) {
   }
 }
 
+/** Keeps ~/.task-queue/tq.mjs the same as this script, so the agent's commands survive plugin updates. */
+function syncStableCopy() {
+  try {
+    const self = fileURLToPath(import.meta.url);
+    if (path.resolve(self) === path.resolve(STABLE)) return;
+    const code = fs.readFileSync(self);
+    if (fs.existsSync(STABLE) && fs.readFileSync(STABLE).equals(code)) return;
+    fs.mkdirSync(HOME, { recursive: true });
+    fs.writeFileSync(STABLE, code);
+  } catch (err) {
+    log('sync', `failed: ${err.message}`);
+  }
+}
+
 const stateFile = (session) => path.join(SESSIONS, `${String(session).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`);
+
+/** One conversation's state: its open task (if any), its pending prompt, and when it was last active. */
+const readState = (session) => readJson(stateFile(session)) ?? {};
+const writeState = (session, state) => writeJson(stateFile(session), state);
 
 // ------------------------------------------------------------------ settings
 
@@ -86,7 +126,8 @@ function loadSettings() {
     key: env.TASK_QUEUE_API_KEY || file.key,
     workspace: env.TASK_QUEUE_WORKSPACE || file.workspace || null,
     category: env.TASK_QUEUE_CATEGORY || file.category || null,
-    estimate: Number(env.TASK_QUEUE_ESTIMATE || file.estimate || DEFAULT_ESTIMATE),
+    estimate: Number(file.estimate || DEFAULT_ESTIMATE),
+    idle: Number(file.idle || DEFAULT_IDLE),
     promptText: file.promptText ?? true,
     // Off only when the user turned it off; environment-only setups count as on.
     enabled: file.enabled ?? true,
@@ -152,12 +193,19 @@ function notBefore(at, floor) {
   return Number.isNaN(f) || a >= f ? new Date(a).toISOString() : floor;
 }
 
-/** Creates the task in the user's own queue and starts it at the moment the server queued it. */
-async function openTask(s, session, title, description) {
-  if (fs.existsSync(stateFile(session))) {
-    await closeTask(s, session, 'Closed when the next request came in before this one finished.');
-  }
-  const body = { title: clip(title, TITLE_MAX), category: s.category, estimate_minutes: s.estimate };
+/** The note for a task the agent never marked done: why it was closed, and the agent's last reply. */
+const unfinished = (state, why) => `Not marked done: ${why}${state.lastReply ? `\n\nLast reply: ${state.lastReply}` : ''}`;
+
+const lastActive = (state) => Date.parse(state.lastActivity ?? state.task?.startedAt ?? 0);
+const minutes = (from, to) => Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 60000));
+const when = (iso) =>
+  new Date(iso).toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/** Creates a task in the user's own queue with the agent's estimate and starts it at once. */
+async function openTask(s, session, { title, estimate, description }) {
+  const state = readState(session);
+  if (state.task) await closeTask(s, session, unfinished(state, 'closed when new work started.'), state.lastStop);
+  const body = { title: clip(title, TITLE_MAX), category: s.category, estimate_minutes: estimate };
   if (s.workspace) body.workspace_id = s.workspace;
   if (description) body.description = description;
   const doc = await api(s, 'POST', '/my/tasks', body);
@@ -165,34 +213,45 @@ async function openTask(s, session, title, description) {
   const id = doc.link.url.split('/').pop();
   const startedAt = doc.task.queue_entered_at;
   await api(s, 'POST', `/my/tasks/${id}`, { started_at: startedAt });
-  const state = { id, number: doc.task.task_number, title: doc.task.title, startedAt };
-  writeJson(stateFile(session), state);
-  return state;
+  const task = { id, number: doc.task.task_number, title: doc.task.title, estimate, startedAt };
+  writeState(session, { ...readState(session), task, prompt: null, lastActivity: startedAt });
+  return task;
 }
 
-/** Completes the session's open task now. Returns it, or null when nothing was open. */
-async function closeTask(s, session, note) {
-  const file = stateFile(session);
-  const state = readJson(file);
-  if (!state) return null;
-  const body = { ended_at: notBefore(new Date().toISOString(), state.startedAt) };
+/** Adds a note to the open task. False when it was closed or removed in the app meanwhile. */
+async function noteTask(s, task, text) {
+  try {
+    await api(s, 'POST', `/my/tasks/${task.id}`, { comment: clip(text, COMMENT_MAX) });
+    return true;
+  } catch (err) {
+    if (['TASK_CLOSED', 'NOT_FOUND'].includes(err.code)) return false;
+    throw err;
+  }
+}
+
+/** Completes the conversation's open task at `at` (default now). Returns it with its end time, or null. */
+async function closeTask(s, session, note, at) {
+  const state = readState(session);
+  const task = state.task;
+  if (!task) return null;
+  const body = { ended_at: notBefore(at ?? new Date().toISOString(), task.startedAt) };
   if (note) body.completion_note = clip(note, NOTE_MAX);
   try {
-    await api(s, 'POST', `/my/tasks/${state.id}`, body);
+    await api(s, 'POST', `/my/tasks/${task.id}`, body);
   } catch (err) {
     if (err.status === 422 && /in the future/.test(err.message) && err.serverTime) {
       // This machine's clock runs ahead of the server's: end it at the server's time instead.
-      body.ended_at = notBefore(new Date(err.serverTime).toISOString(), state.startedAt);
-      await api(s, 'POST', `/my/tasks/${state.id}`, body);
+      body.ended_at = notBefore(new Date(err.serverTime).toISOString(), task.startedAt);
+      await api(s, 'POST', `/my/tasks/${task.id}`, body);
     } else if (['TASK_CLOSED', 'NOT_FOUND', 'INVALID_TRANSITION'].includes(err.code)) {
       // Completed, removed or blocked in the app meanwhile: nothing for the tracker to close.
-      log('close', `${state.number}: ${err.code} ${err.message}`);
+      log('close', `${task.number}: ${err.code} ${err.message}`);
     } else {
       throw err;
     }
   }
-  fs.rmSync(file, { force: true });
-  return state;
+  writeState(session, { ...readState(session), task: null });
+  return { ...task, endedAt: body.ended_at };
 }
 
 // ------------------------------------------------------------------ hooks
@@ -207,52 +266,90 @@ async function readStdin() {
   }
 }
 
-function promptTask(input, s) {
-  const prompt = String(input.prompt ?? '').trim();
-  const project = input.cwd ? path.basename(input.cwd) : '';
-  const session = input.session_id || 'default';
-  const firstLine = (prompt.split(/\r?\n/).find((l) => l.trim()) ?? '').replace(/\s+/g, ' ').trim();
-  const fallback = project ? `AI coding request in ${project}` : 'AI coding request';
-  const title = s.promptText ? firstLine || fallback : fallback;
-  const footer = [project && `Project: ${project}`, `Session: ${session}`, 'Logged by the Task Queue tracker for AI coding agents.']
-    .filter(Boolean)
-    .join('\n');
-  const description = s.promptText ? `${clip(prompt, PROMPT_MAX)}\n\n---\n${footer}` : footer;
-  return { prompt, session, title, description };
+/** What the agent is told with each prompt: where the work stands and the exact commands to run. */
+function guidance(session, task) {
+  const start = `${COMMAND} start --session ${session} --estimate <minutes> "<short title>"`;
+  const done = `${COMMAND} done --session ${session} "<one-line summary of what you did>"`;
+  if (!task) {
+    return [
+      'Task Queue tracking is on: your work for the user is logged as tasks in their Task Queue account.',
+      '- If this request is work (a change, a fix, an investigation, a document; not a quick question or a thank-you), log it before anything else by running:',
+      `  ${start}`,
+      '  with your honest estimate of the minutes you need to finish it.',
+      '- When that work is finished (done, not when you stop to ask the user something), run this as your last step. It records the end date and time:',
+      `  ${done}`,
+    ].join('\n');
+  }
+  return [
+    `Task Queue: ${task.number} "${task.title}" is in progress (your estimate: ${task.estimate} minutes, started ${when(task.startedAt)}).`,
+    '- If this prompt continues that work, carry on. When it is finished (done, not when you stop to ask the user something), run as your last step:',
+    `  ${done}`,
+    '- If it is new, unrelated work, first run the line below. It closes the open task at the time you last finished replying:',
+    `  ${start}`,
+  ].join('\n');
 }
 
 const HOOKS = {
-  /** A new request: close any task the session left open, then open and start one for this request. */
+  /** A prompt: remember it (it becomes the task's description, or a note on the open task) and brief the agent. */
   async prompt(input, s) {
     if (!s.enabled || !ready(s)) return;
-    const task = promptTask(input, s);
-    if (!task.prompt || task.prompt.startsWith('/')) return; // empty, or a slash command
-    try {
-      const state = await openTask(s, task.session, task.title, task.description);
-      log('prompt', `${state.number} started: ${state.title}`);
-    } catch (err) {
-      log('prompt', `failed: ${err.code} ${err.message}`);
-      // Printed text reaches the agent, so the user hears about it instead of losing the record silently.
-      process.stdout.write(
-        `Task Queue tracking could not log this request (${err.code}: ${err.message}). ` +
-          'Tell the user once, briefly, and suggest checking it with the task-queue skill (status).\n',
-      );
-    }
-  },
-
-  /** The agent finished replying: complete the request's task with its last message as the note. */
-  async stop(input, s) {
-    if (!connected(s)) return;
+    const prompt = String(input.prompt ?? '').trim();
+    if (!prompt || prompt.startsWith('/')) return; // empty, or a slash command
     const session = input.session_id || 'default';
-    const reply = s.promptText ? String(input.last_assistant_message ?? '').trim() : '';
-    const state = await closeTask(s, session, reply || 'Finished.');
-    if (state) log('stop', `${state.number} completed`);
+    let state = readState(session);
+    if (state.task && Date.now() - lastActive(state) > s.idle * 60_000) {
+      // Idle too long: that stretch of work ended when the agent last finished replying (or was last prompted).
+      try {
+        const closed = await closeTask(s, session, unfinished(state, 'closed after the conversation went idle.'), state.lastStop ?? state.lastActivity);
+        log('prompt', `${closed.number} completed (idle)`);
+      } catch (err) {
+        log('prompt', `idle close failed: ${err.code} ${err.message}`);
+      }
+      state = readState(session);
+    }
+    const now = new Date().toISOString();
+    writeState(session, { ...state, prompt: { text: prompt, at: now, cwd: input.cwd ?? null }, lastActivity: now });
+    process.stdout.write(`${guidance(session, state.task)}\n`);
   },
 
-  /** Ask for setup at the start of a session until it's done (or turned off). */
-  async 'session-start'(_input, s) {
+  /** The agent finished a reply: note a follow-up prompt on the task it continued, and remember when it finished. */
+  async stop(input, s) {
+    const session = input.session_id || 'default';
+    const state = readState(session);
+    if (!state.task && !state.prompt) return;
+    if (state.task && state.prompt && s.promptText && connected(s)) {
+      try {
+        if (!(await noteTask(s, state.task, `Prompt: ${state.prompt.text}`))) state.task = null; // closed in the app
+      } catch (err) {
+        log('stop', `note failed: ${err.code} ${err.message}`);
+      }
+    }
+    const now = new Date().toISOString();
+    const reply = s.promptText ? String(input.last_assistant_message ?? '').trim() : '';
+    writeState(session, { ...state, prompt: null, lastStop: now, lastActivity: now, lastReply: reply ? clip(reply, NOTE_MAX) : state.lastReply });
+  },
+
+  /** Keep the stable copy current, close conversations that never ended, and ask for setup until it's done. */
+  async 'session-start'(input, s) {
+    syncStableCopy();
+    if (connected(s) && fs.existsSync(SESSIONS)) {
+      for (const name of fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json'))) {
+        const session = name.slice(0, -'.json'.length);
+        const state = readJson(path.join(SESSIONS, name)) ?? {};
+        if (session === input.session_id || session === MANUAL || Date.now() - lastActive(state) < ABANDONED_MS) continue;
+        try {
+          if (state.task) {
+            await closeTask(s, session, unfinished(state, 'the conversation never ended properly.'), state.lastStop ?? state.lastActivity);
+            log('session-start', `${state.task.number} closed (abandoned conversation)`);
+          }
+          fs.rmSync(path.join(SESSIONS, name), { force: true });
+        } catch (err) {
+          log('session-start', `closing ${state.task?.number} failed: ${err.code} ${err.message}`);
+        }
+      }
+    }
     if (ready(s) || s.file.enabled === false) return;
-    const missing = connected(s) ? 'the category for tracked requests' : 'their Task Queue API URL and personal API key';
+    const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
     process.stdout.write(
       `The Task Queue tracker plugin is installed but not set up: it still needs ${missing}. ` +
         'Before working on the first request, use the task-queue skill to ask the user for it and finish the setup. ' +
@@ -260,11 +357,15 @@ const HOOKS = {
     );
   },
 
-  /** The session is over: complete anything it left open. */
+  /** The conversation is over (exit, /clear, …): close anything left open, at the time the agent last finished. */
   async 'session-end'(input, s) {
-    if (!connected(s)) return;
-    const state = await closeTask(s, input.session_id || 'default', 'Closed when the session ended.');
-    if (state) log('session-end', `${state.number} completed`);
+    const session = input.session_id || 'default';
+    const state = readState(session);
+    if (state.task && connected(s)) {
+      const closed = await closeTask(s, session, unfinished(state, 'closed when the conversation ended.'), state.lastStop);
+      log('session-end', `${closed.number} completed (conversation ended)`);
+    }
+    fs.rmSync(stateFile(session), { force: true });
   },
 };
 
@@ -334,6 +435,11 @@ function settle(s, me, flags = {}) {
   return { addable, workspace, changes };
 }
 
+function allowed() {
+  const settings = readJson(path.join(os.homedir(), '.claude', 'settings.json'));
+  return Boolean(settings?.permissions?.allow?.includes(ALLOW_RULE));
+}
+
 function summary(s, extra = []) {
   out(
     `Tracking: ${!s.enabled ? 'off (disabled)' : ready(s) ? 'on' : 'not set up yet'}`,
@@ -341,14 +447,24 @@ function summary(s, extra = []) {
     `API key: ${maskKey(s.key)}`,
     `Workspace: ${s.workspace ?? 'not set (only needed when you belong to several)'}`,
     `Category: ${s.category ?? 'not set'}`,
-    `Estimate per request: ${s.estimate} minutes`,
-    `Prompt text sent: ${s.promptText ? 'yes (title, description and the final reply as the completion note)' : 'no (generic title only)'}`,
+    `Estimates: the agent's own, per task (${s.estimate} minutes if it gives none)`,
+    `Idle limit: ${s.idle} minutes, after which an open task is closed at the agent's last reply`,
+    `Prompt text sent: ${s.promptText ? 'yes (the request as the description, follow-up prompts as notes, the final reply as the note when not marked done)' : 'no'}`,
+    `Claude Code runs the tracker without asking: ${allowed() ? 'yes' : `no (run: ${COMMAND} allow)`}`,
     ...extra,
   );
 }
 
+function estimateOf(flags, s) {
+  if (flags.estimate === undefined || flags.estimate === true) return { value: s.estimate, given: false };
+  const n = Number(flags.estimate);
+  if (!(Number.isInteger(n) && n >= 1 && n <= MAX_ESTIMATE)) fail('--estimate takes whole minutes, e.g. --estimate 20.');
+  return { value: n, given: true };
+}
+
 const COMMANDS = {
   async setup({ flags }) {
+    syncStableCopy();
     let s = loadSettings();
     const url = flags.url ? normalizeUrl(flags.url) : s.url;
     const key = typeof flags.key === 'string' ? flags.key.trim() : s.key;
@@ -356,10 +472,8 @@ const COMMANDS = {
     if (!key.startsWith('tqk_')) fail('That isn’t a Task Queue API key: keys start with tqk_. Generate one under Profile → API keys.');
     s = { ...s, url, key };
     const me = await account(s);
-    const estimate = flags.estimate !== undefined ? Number(flags.estimate) : undefined;
-    if (estimate !== undefined && !(Number.isInteger(estimate) && estimate > 0)) fail('--estimate takes whole minutes, e.g. 30.');
     const { addable, workspace, changes } = settle(s, me, flags);
-    s = saveSettings({ url, key, ...changes, estimate: estimate ?? s.file.estimate, enabled: true });
+    s = saveSettings({ url, key, ...changes, enabled: true });
     const next = [];
     if (!workspace) next.push('Next: choose the workspace with  set workspace <workspace id>', ...describeWorkspaces(addable));
     else if (!s.category) next.push(`Next: choose the category with  set category <VALUE>  (in ${workspace.name}: ${workspace.categories.map((c) => c.value).join(', ')})`);
@@ -371,11 +485,12 @@ const COMMANDS = {
     const [field, ...words] = rest;
     const value = words.join(' ').trim();
     let s = loadSettings();
-    if (!value) fail('Usage: set <workspace|category|estimate|prompt-text> <value>');
-    if (field === 'estimate') {
+    const usage = 'Usage: set <workspace|category|estimate|idle|prompt-text> <value>';
+    if (!value) fail(usage);
+    if (field === 'estimate' || field === 'idle') {
       const n = Number(value);
-      if (!(Number.isInteger(n) && n > 0)) fail('The estimate is whole minutes, e.g. 30.');
-      s = saveSettings({ estimate: n });
+      if (!(Number.isInteger(n) && n > 0)) fail(`The ${field} is whole minutes, e.g. ${field === 'idle' ? 60 : 30}.`);
+      s = saveSettings({ [field]: n });
     } else if (field === 'prompt-text') {
       if (!['on', 'off'].includes(value)) fail('Usage: set prompt-text on|off');
       s = saveSettings({ promptText: value === 'on' });
@@ -388,7 +503,7 @@ const COMMANDS = {
       }
       s = saveSettings(changes);
     } else {
-      fail('Usage: set <workspace|category|estimate|prompt-text> <value>');
+      fail(usage);
     }
     summary(s);
   },
@@ -410,8 +525,10 @@ const COMMANDS = {
         extra.push(`Connection: FAILED (${err.code}: ${err.message})`);
       }
     }
-    const open = fs.existsSync(SESSIONS) ? fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json')) : [];
-    extra.push(`Open tracked tasks: ${open.length}`);
+    const open = (fs.existsSync(SESSIONS) ? fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json')) : [])
+      .map((name) => readJson(path.join(SESSIONS, name))?.task)
+      .filter(Boolean);
+    extra.push(`Open tasks: ${open.length}`, ...open.map((t) => `  ${t.number}: ${t.title} (estimate ${t.estimate} min, started ${when(t.startedAt)})`));
     if (fs.existsSync(LOG)) extra.push('Recent log:', ...fs.readFileSync(LOG, 'utf8').trim().split('\n').slice(-5).map((l) => `  ${l}`));
     summary(s, extra);
   },
@@ -425,24 +542,63 @@ const COMMANDS = {
     summary(saveSettings({ enabled: false }));
   },
 
+  /** Adds the tracker to Claude Code's allowed commands, so its start and done never wait for approval. */
+  async allow() {
+    syncStableCopy();
+    const file = path.join(os.homedir(), '.claude', 'settings.json');
+    const settings = fs.existsSync(file) ? readJson(file) : {};
+    if (settings === null) fail(`${file} isn't valid JSON, so it was left alone. Add "${ALLOW_RULE}" to permissions.allow by hand.`);
+    settings.permissions ??= {};
+    settings.permissions.allow ??= [];
+    if (!settings.permissions.allow.includes(ALLOW_RULE)) settings.permissions.allow.push(ALLOW_RULE);
+    writeJson(file, settings);
+    out(`Claude Code now runs the tracker without asking: added ${ALLOW_RULE} to ${file}.`);
+  },
+
   async start({ rest, flags }) {
     const s = loadSettings();
     if (!ready(s)) fail('Not set up: run setup --url <API URL> --key <API key> --category <VALUE> first.');
     const title = rest.join(' ').trim();
-    if (!title) fail('Usage: start "<one-line summary of the request>"');
-    const state = await openTask(s, flags.session || MANUAL, title, typeof flags.description === 'string' ? flags.description : undefined).catch((err) =>
+    if (!title) fail('Usage: start --estimate <minutes> "<short title>"');
+    const estimate = estimateOf(flags, s);
+    const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    const pending = readState(session).prompt;
+    let description = typeof flags.description === 'string' ? flags.description : '';
+    if (!description && pending && s.promptText) {
+      const project = pending.cwd ? path.basename(pending.cwd) : '';
+      const footer = [project && `Project: ${project}`, `Session: ${session}`, 'Logged by the Task Queue tracker for AI coding agents.'].filter(Boolean).join('\n');
+      description = `${clip(pending.text, PROMPT_MAX)}\n\n---\n${footer}`;
+    }
+    const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined }).catch((err) =>
       fail(`Could not open the task: ${err.code}: ${err.message}`),
     );
-    out(`Started ${state.number}: ${state.title}`);
+    out(`Started ${task.number}: ${task.title} (estimate ${task.estimate} minutes${estimate.given ? '' : ', the default: no --estimate given'}).`);
   },
 
-  async finish({ rest, flags }) {
+  async note({ rest, flags }) {
     const s = loadSettings();
     if (!connected(s)) fail('Not set up: run setup first.');
-    const state = await closeTask(s, flags.session || MANUAL, rest.join(' ').trim() || 'Finished.').catch((err) =>
-      fail(`Could not complete the task: ${err.code}: ${err.message}`),
-    );
-    out(state ? `Completed ${state.number}: ${state.title}` : 'No task is open.');
+    const text = rest.join(' ').trim();
+    if (!text) fail('Usage: note "<text>"');
+    const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    const state = readState(session);
+    if (!state.task) fail('No task is open: start one first.');
+    const noted = await noteTask(s, state.task, text).catch((err) => fail(`Could not add the note: ${err.code}: ${err.message}`));
+    if (!noted) {
+      writeState(session, { ...state, task: null });
+      fail(`${state.task.number} was closed or removed in Task Queue: start a new task.`);
+    }
+    writeState(session, { ...state, lastActivity: new Date().toISOString() });
+    out(`Noted on ${state.task.number}.`);
+  },
+
+  async done({ rest, flags }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    const closed = await closeTask(s, session, rest.join(' ').trim() || 'Done.').catch((err) => fail(`Could not complete the task: ${err.code}: ${err.message}`));
+    if (!closed) return out('No task is open.');
+    out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated).`);
   },
 
   async hook({ rest }) {
@@ -456,11 +612,12 @@ const COMMANDS = {
     }
   },
 };
+COMMANDS.finish = COMMANDS.done;
 
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, start, finish, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, allow, start, note, done, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);

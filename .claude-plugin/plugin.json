@@ -1,8 +1,15 @@
 {
   "name": "task-queue",
-  "version": "1.0.0",
-  "description": "Logs every request you give Claude Code as a task in your Task Queue account: started when you send it, completed when Claude finishes, so admins can track AI coding activity.",
-  "author": { "name": "devops-riku" },
+  "version": "1.1.0",
+  "description": "Claude logs its own work as tasks in your Task Queue account: it opens a task with its estimate when new work starts and marks it done with the end time when finished, so admins can track AI coding activity.",
+  "author": {
+    "name": "devops-riku"
+  },
   "repository": "https://github.com/devops-riku/task-queue-skill",
-  "keywords": ["task-queue", "time-tracking", "activity", "hooks"]
+  "keywords": [
+    "task-queue",
+    "time-tracking",
+    "activity",
+    "hooks"
+  ]
 }
