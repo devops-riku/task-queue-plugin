@@ -94,9 +94,9 @@ Ask Claude to run these, or run `node ~/.task-queue/tq.mjs <command>` yourself (
 | `workspaces` | Lists the workspaces you can add tasks to, with their categories |
 | `set workspace <id>` / `set category <VALUE>` | Sets where tasks go |
 | `set idle <minutes>` | Sets how long a conversation may sit idle before its open task is closed (default 60) |
-| `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30) |
+| `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
-| `start --estimate <minutes> "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand |
+| `start --estimate <minutes> "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 

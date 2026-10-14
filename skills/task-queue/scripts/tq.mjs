@@ -38,7 +38,9 @@ const STABLE = path.join(HOME, 'tq.mjs');
 const TIMEOUT_MS = 5000;
 // Used when `start` is given no estimate.
 const DEFAULT_ESTIMATE = 30;
-const MAX_ESTIMATE = 60 * 24 * 365;
+// The longest estimate the tracker sends (8 hours); longer work is split into several tasks. This only guards
+// against casually inflated estimates: the Task Queue server must enforce its own limit.
+const MAX_ESTIMATE = 8 * 60;
 // Minutes a conversation may sit idle with a task open; the next prompt after that closes it.
 const DEFAULT_IDLE = 60;
 // Conversations that never ended properly (a closed terminal) are closed by the next session after this.
@@ -162,7 +164,7 @@ function loadSettings() {
     key: env.TASK_QUEUE_API_KEY || file.key,
     workspace: env.TASK_QUEUE_WORKSPACE || file.workspace || null,
     category: env.TASK_QUEUE_CATEGORY || file.category || null,
-    estimate: Number(file.estimate || DEFAULT_ESTIMATE),
+    estimate: Math.min(Number(file.estimate || DEFAULT_ESTIMATE), MAX_ESTIMATE),
     idle: Number(file.idle || DEFAULT_IDLE),
     promptText: file.promptText ?? true,
     // Off only when the user turned it off; environment-only setups count as on.
@@ -311,7 +313,7 @@ function guidance(session, task) {
       'Task Queue tracking is on: your work for the user is logged as tasks in their Task Queue account.',
       '- If this request is work (a change, a fix, an investigation, a document; not a quick question or a thank-you), log it before anything else by running:',
       `  ${start}`,
-      '  with your honest estimate of the minutes you need to finish it.',
+      `  with your honest estimate of the minutes you need to finish it (at most ${MAX_ESTIMATE}; split longer work into several tasks).`,
       '- When that work is finished (done, not when you stop to ask the user something), run this as your last step. It records the end date and time:',
       `  ${done}`,
     ].join('\n');
@@ -519,7 +521,9 @@ function summary(s, extra = []) {
 function estimateOf(flags, s) {
   if (flags.estimate === undefined || flags.estimate === true) return { value: s.estimate, given: false };
   const n = Number(flags.estimate);
-  if (!(Number.isInteger(n) && n >= 1 && n <= MAX_ESTIMATE)) fail('--estimate takes whole minutes, e.g. --estimate 20.');
+  if (!(Number.isInteger(n) && n >= 1 && n <= MAX_ESTIMATE)) {
+    fail(`--estimate takes whole minutes from 1 to ${MAX_ESTIMATE}, e.g. --estimate 20. Split longer work into several tasks.`);
+  }
   return { value: n, given: true };
 }
 
@@ -552,6 +556,7 @@ const COMMANDS = {
     if (field === 'estimate' || field === 'idle') {
       const n = Number(value);
       if (!(Number.isInteger(n) && n > 0)) fail(`The ${field} is whole minutes, e.g. ${field === 'idle' ? 60 : 30}.`);
+      if (field === 'estimate' && n > MAX_ESTIMATE) fail(`The estimate can be at most ${MAX_ESTIMATE} minutes.`);
       s = saveSettings({ [field]: n });
     } else if (field === 'prompt-text') {
       if (!['on', 'off'].includes(value)) fail('Usage: set prompt-text on|off');

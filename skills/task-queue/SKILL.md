@@ -47,7 +47,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `workspaces` | Workspaces the account can add tasks to, with their category values |
 | `set workspace <id>` / `set category <VALUE>` | Where tasks go |
 | `set idle <minutes>` | How long a conversation may sit idle before its open task is closed (default 60) |
-| `set estimate <minutes>` | The estimate used when `start` is given none (default 30) |
+| `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 ## When tracking fails
 
