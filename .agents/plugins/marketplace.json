@@ -1,0 +1,16 @@
+{
+  "name": "task-queue-plugin",
+  "interface": {
+    "displayName": "Task Queue"
+  },
+  "plugins": [
+    {
+      "name": "task-queue",
+      "source": {
+        "source": "local",
+        "path": "./plugins/task-queue"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -5,9 +5,9 @@
  * needs (`start`), and when the work is finished it completes the task with the end date and time
  * (`done`). Follow-up prompts on the same work are added to the open task as notes.
  *
- * In Claude Code the plugin's hooks keep the agent informed (every prompt says whether a task is open and
- * what to run) and close what it leaves open: a conversation idle past the idle limit, one that ends
- * (exit, /clear), or one abandoned without ending, at the time the agent last finished replying.
+ * In Claude Code, Codex and Gemini CLI the plugin's hooks keep the agent informed (every prompt says whether a
+ * task is open and what to run) and close what it leaves open: a conversation idle past the idle limit, one
+ * that ends (exit, /clear), or one abandoned without ending, at the time the agent last finished replying.
  *
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
@@ -15,10 +15,12 @@
  *   start [--session <id>] --estimate <minutes> "<title>"   Open and start a task.
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
- *   hook <prompt|stop|session-start|session-end|approve>     Hook entry points: JSON on stdin, never fail.
+ *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
+ *                                                            Hook entry points: JSON on stdin, never fail.
  *
- * Once the plugin is enabled the agent never has to ask before running the tracker: a PreToolUse hook
- * approves exactly one run of it, with nothing chained, piped, redirected or substituted.
+ * In Claude Code and Codex the agent never has to ask before running the tracker: a hook approves exactly one
+ * run of it, with nothing chained, piped, redirected or substituted. Gemini CLI doesn't let an extension
+ * approve commands, so there the user approves them (or allows them with their own policy).
  *
  * Settings live in ~/.task-queue/config.json (TASK_QUEUE_HOME moves the folder), with a copy of this script
  * at ~/.task-queue/tq.mjs so the commands have a stable path. The environment variables TASK_QUEUE_URL,
@@ -304,6 +306,18 @@ async function readStdin() {
   }
 }
 
+/** The agents that run these hooks (`--host`). Claude Code by default, so existing installs keep working. */
+const HOSTS = ['claude', 'codex', 'gemini'];
+
+/** Adds `text` to the agent's context. Gemini reads only JSON from a hook's stdout; the others take plain text. */
+function tell(host, event, text) {
+  if (host === 'gemini') {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }));
+  } else {
+    process.stdout.write(`${text}\n`);
+  }
+}
+
 /** What the agent is told with each prompt: where the work stands and the exact commands to run. */
 function guidance(session, task) {
   const start = `${COMMAND} start --session ${session} --estimate <minutes> "<short title>"`;
@@ -327,45 +341,58 @@ function guidance(session, task) {
   ].join('\n');
 }
 
-/** Asks the agent to finish setup, once per conversation: from SessionStart or the first prompt, whichever runs
- * first. Nothing when the user turned tracking off. */
-function askForSetup(session, s) {
-  if (s.file.enabled === false) return;
+/** The request to finish setup, once per conversation: from SessionStart or the first prompt, whichever runs
+ * first. Null when it was already made or the user turned tracking off. It names the exact commands, since not
+ * every agent can open the task-queue skill. */
+function setupRequest(session, s) {
+  if (s.file.enabled === false) return null;
   const state = readState(session);
-  if (state.setupAsked) return;
+  if (state.setupAsked) return null;
   writeState(session, { ...state, setupAsked: true });
   const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
-  process.stdout.write(
-    `The Task Queue tracker plugin is installed but not set up: it still needs ${missing}. ` +
-      'Before working on the first request, use the task-queue skill to ask the user for it and finish the setup. ' +
-      'If the user says they do not want tracking, run its disable command.\n',
-  );
+  return [
+    `The Task Queue tracker is installed but not set up: it still needs ${missing}. Before working on the first request, finish the setup:`,
+    '1. Ask the user for their Task Queue API URL (e.g. http://localhost:8000/api/v1) and their personal API key (Task Queue: Profile, API keys; it starts with tqk_). The key is saved only on this machine; never repeat it back or write it anywhere else.',
+    `2. Run: ${COMMAND} setup --url <url> --key <key>`,
+    `3. If it lists several workspaces, ask the user which one and run: ${COMMAND} set workspace <workspace id>`,
+    `4. Ask which category the tasks go under (setup lists them) and run: ${COMMAND} set category <VALUE>`,
+    `If the user does not want tracking, run: ${COMMAND} disable`,
+  ].join('\n');
 }
 
 const HOOKS = {
-  /** Before a shell command: approve a run of this tracker, so the agent never stops to ask for it. */
-  async approve(input) {
+  /** Before a shell command: approve a run of this tracker, so the agent never stops to ask for it. Claude Code
+   * approves in PreToolUse and Codex in PermissionRequest; Gemini CLI doesn't let an extension approve. */
+  async approve(input, s, host) {
     if (!['Bash', 'PowerShell'].includes(input.tool_name) || !isTrackerCommand(input.tool_input?.command)) return;
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          permissionDecisionReason: 'Task Queue tracker command, approved by the task-queue plugin.',
-        },
-      }),
-    );
+    if (host === 'codex') {
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } }));
+    } else if (host === 'claude') {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason: 'Task Queue tracker command, approved by the task-queue plugin.',
+          },
+        }),
+      );
+    }
   },
 
   /** A prompt: remember it (it becomes the task's description, or a note on the open task) and brief the agent. */
-  async prompt(input, s) {
+  async prompt(input, s, host) {
     const prompt = String(input.prompt ?? '').trim();
     if (!prompt || prompt.startsWith('/')) return; // empty, or a slash command
     const session = input.session_id || 'default';
     // SessionStart doesn't run for a plugin loaded mid-conversation (/reload-plugins), so the prompt hook also
     // does its per-conversation work: keep the stable copy current and ask for setup until it's done.
     syncStableCopy();
-    if (!ready(s)) return askForSetup(session, s);
+    if (!ready(s)) {
+      const request = setupRequest(session, s);
+      if (request) tell(host, 'BeforeAgent', request);
+      return;
+    }
     if (!s.enabled) return;
     let state = readState(session);
     if (state.task && Date.now() - lastActive(state) > s.idle * 60_000) {
@@ -380,7 +407,7 @@ const HOOKS = {
     }
     const now = new Date().toISOString();
     writeState(session, { ...state, prompt: { text: prompt, at: now, cwd: input.cwd ?? null }, lastActivity: now });
-    process.stdout.write(`${guidance(session, state.task)}\n`);
+    tell(host, 'BeforeAgent', guidance(session, state.task));
   },
 
   /** The agent finished a reply: note a follow-up prompt on the task it continued, and remember when it finished. */
@@ -396,12 +423,13 @@ const HOOKS = {
       }
     }
     const now = new Date().toISOString();
-    const reply = s.promptText ? String(input.last_assistant_message ?? '').trim() : '';
+    // Claude Code and Codex send the final reply as last_assistant_message, Gemini CLI as prompt_response.
+    const reply = s.promptText ? String(input.last_assistant_message ?? input.prompt_response ?? '').trim() : '';
     writeState(session, { ...state, prompt: null, lastStop: now, lastActivity: now, lastReply: reply ? clip(reply, NOTE_MAX) : state.lastReply });
   },
 
   /** Keep the stable copy current, close conversations that never ended, and ask for setup until it's done. */
-  async 'session-start'(input, s) {
+  async 'session-start'(input, s, host) {
     syncStableCopy();
     if (connected(s) && fs.existsSync(SESSIONS)) {
       for (const name of fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json'))) {
@@ -419,7 +447,10 @@ const HOOKS = {
         }
       }
     }
-    if (!ready(s)) askForSetup(input.session_id || 'default', s);
+    if (!ready(s)) {
+      const request = setupRequest(input.session_id || 'default', s);
+      if (request) tell(host, 'SessionStart', request);
+    }
   },
 
   /** The conversation is over (exit, /clear, …): close anything left open, at the time the agent last finished. */
@@ -655,11 +686,12 @@ const COMMANDS = {
     out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated).`);
   },
 
-  async hook({ rest }) {
+  async hook({ rest, flags }) {
     const handler = HOOKS[rest[0]];
+    const host = HOSTS.includes(flags.host) ? flags.host : 'claude';
     try {
       const input = await readStdin();
-      if (handler) await handler(input, loadSettings());
+      if (handler) await handler(input, loadSettings(), host);
     } catch (err) {
       // A hook never blocks or fails the agent: whatever went wrong is only logged.
       log(`hook ${rest[0]}`, `failed: ${err.code ?? err.name} ${err.message}`);

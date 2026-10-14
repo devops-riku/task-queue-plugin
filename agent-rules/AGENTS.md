@@ -18,7 +18,7 @@ Use a short, plain summary of the work as the title. Never put secrets or pasted
 You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-plugin` repository:
 
 ```
-node <clone>/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
+node <clone>/plugins/task-queue/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
 ```
 
 Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your commands:
@@ -70,10 +70,11 @@ In PowerShell, use `Invoke-RestMethod` or `curl.exe`, never plain `curl`. Every 
 
 ## Using this file with your agent
 
+Claude Code, Codex and Gemini CLI don't need this file: install the plugin or extension from this repository instead (see the README). Its hooks do the same, and close tasks the agent leaves open.
+
 | Agent | Where the file goes |
 |-------|---------------------|
-| Codex, Cursor, Amp, Jules and other agents that read `AGENTS.md` | `AGENTS.md` in the project root |
-| Gemini CLI | `GEMINI.md` |
+| Cursor, Amp, Jules and other agents that read `AGENTS.md` | `AGENTS.md` in the project root |
 | GitHub Copilot | `.github/copilot-instructions.md` |
 | Cursor (rules) | `.cursor/rules/task-queue.mdc` |
 | Windsurf | `.windsurfrules` |

@@ -3,12 +3,12 @@
   "owner": {
     "name": "devops-riku"
   },
-  "description": "Task Queue tools for Claude Code: Claude logs its work as tasks with its estimate and the start and end time.",
+  "description": "Task Queue tracking for AI coding agents: the agent logs its work as tasks with its estimate and the start and end time.",
   "plugins": [
     {
       "name": "task-queue",
-      "source": ".",
-      "description": "Claude logs its own work as Task Queue tasks, with its estimate and the start and end time.",
+      "source": "./plugins/task-queue",
+      "description": "The agent logs its own work as Task Queue tasks, with its estimate and the start and end time.",
       "version": "1.3.0"
     }
   ]

@@ -12,13 +12,15 @@ Once this is set up, you log your own work in the user's Task Queue queue:
 - **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes.
 - **When the work is finished:** you mark the task done as your last step, which records the end date and time.
 
-Every prompt reminds you whether a task is open, and gives you the exact commands to run. The plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
+Every prompt reminds you whether a task is open, and gives you the exact commands to run. In Claude Code and Codex the plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
 
-Setup and settings use the bundled tracker:
+Setup and settings use the tracker. In Claude Code, run the bundled copy:
 
 ```
 node "${CLAUDE_SKILL_DIR}/scripts/tq.mjs" <command>
 ```
+
+Elsewhere (Codex, Gemini CLI), run `scripts/tq.mjs` next to this file, or the copy the plugin's hooks keep at `~/.task-queue/tq.mjs`. The hooks' setup note gives its full path.
 
 ## Setup
 

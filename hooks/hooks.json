@@ -5,62 +5,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/skills/task-queue/scripts/tq.mjs",
-              "hook",
-              "session-start"
-            ],
-            "timeout": 20
+            "command": "node \"${extensionPath}/plugins/task-queue/skills/task-queue/scripts/tq.mjs\" hook session-start --host gemini",
+            "timeout": 20000
           }
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "BeforeAgent": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/skills/task-queue/scripts/tq.mjs",
-              "hook",
-              "prompt"
-            ],
-            "timeout": 20
+            "command": "node \"${extensionPath}/plugins/task-queue/skills/task-queue/scripts/tq.mjs\" hook prompt --host gemini",
+            "timeout": 20000
           }
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|PowerShell",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/skills/task-queue/scripts/tq.mjs",
-              "hook",
-              "approve"
-            ],
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
+    "AfterAgent": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/skills/task-queue/scripts/tq.mjs",
-              "hook",
-              "stop"
-            ],
-            "timeout": 20
+            "command": "node \"${extensionPath}/plugins/task-queue/skills/task-queue/scripts/tq.mjs\" hook stop --host gemini",
+            "timeout": 20000
           }
         ]
       }
@@ -70,13 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/skills/task-queue/scripts/tq.mjs",
-              "hook",
-              "session-end"
-            ],
-            "timeout": 20
+            "command": "node \"${extensionPath}/plugins/task-queue/skills/task-queue/scripts/tq.mjs\" hook session-end --host gemini",
+            "timeout": 5000
           }
         ]
       }
