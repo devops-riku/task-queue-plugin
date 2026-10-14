@@ -325,6 +325,21 @@ function guidance(session, task) {
   ].join('\n');
 }
 
+/** Asks the agent to finish setup, once per conversation: from SessionStart or the first prompt, whichever runs
+ * first. Nothing when the user turned tracking off. */
+function askForSetup(session, s) {
+  if (s.file.enabled === false) return;
+  const state = readState(session);
+  if (state.setupAsked) return;
+  writeState(session, { ...state, setupAsked: true });
+  const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
+  process.stdout.write(
+    `The Task Queue tracker plugin is installed but not set up: it still needs ${missing}. ` +
+      'Before working on the first request, use the task-queue skill to ask the user for it and finish the setup. ' +
+      'If the user says they do not want tracking, run its disable command.\n',
+  );
+}
+
 const HOOKS = {
   /** Before a shell command: approve a run of this tracker, so the agent never stops to ask for it. */
   async approve(input) {
@@ -342,10 +357,14 @@ const HOOKS = {
 
   /** A prompt: remember it (it becomes the task's description, or a note on the open task) and brief the agent. */
   async prompt(input, s) {
-    if (!s.enabled || !ready(s)) return;
     const prompt = String(input.prompt ?? '').trim();
     if (!prompt || prompt.startsWith('/')) return; // empty, or a slash command
     const session = input.session_id || 'default';
+    // SessionStart doesn't run for a plugin loaded mid-conversation (/reload-plugins), so the prompt hook also
+    // does its per-conversation work: keep the stable copy current and ask for setup until it's done.
+    syncStableCopy();
+    if (!ready(s)) return askForSetup(session, s);
+    if (!s.enabled) return;
     let state = readState(session);
     if (state.task && Date.now() - lastActive(state) > s.idle * 60_000) {
       // Idle too long: that stretch of work ended when the agent last finished replying (or was last prompted).
@@ -398,13 +417,7 @@ const HOOKS = {
         }
       }
     }
-    if (ready(s) || s.file.enabled === false) return;
-    const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
-    process.stdout.write(
-      `The Task Queue tracker plugin is installed but not set up: it still needs ${missing}. ` +
-        'Before working on the first request, use the task-queue skill to ask the user for it and finish the setup. ' +
-        'If the user says they do not want tracking, run its disable command.\n',
-    );
+    if (!ready(s)) askForSetup(input.session_id || 'default', s);
   },
 
   /** The conversation is over (exit, /clear, …): close anything left open, at the time the agent last finished. */
@@ -437,6 +450,9 @@ function parseArgs(argv) {
 }
 
 const out = (...lines) => console.log(lines.join('\n'));
+
+const RELOAD_HINT =
+  'Tracking starts with your next prompt. In Claude Code, if the plugin was installed during this conversation, type /reload-plugins first so its hooks load now instead of in your next session.';
 
 class Stop extends Error {}
 
@@ -522,6 +538,7 @@ const COMMANDS = {
     const next = [];
     if (!workspace) next.push('Next: choose the workspace with  set workspace <workspace id>', ...describeWorkspaces(addable));
     else if (!s.category) next.push(`Next: choose the category with  set category <VALUE>  (in ${workspace.name}: ${workspace.categories.map((c) => c.value).join(', ')})`);
+    if (ready(s)) next.push(RELOAD_HINT);
     out(`Connected as ${me.user}.`);
     summary(s, next);
   },

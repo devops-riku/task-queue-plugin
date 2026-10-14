@@ -34,7 +34,7 @@ Do these in order when tracking isn't set up, or when the user asks to set it up
 3. **If setup asks for a workspace**, show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
 4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
 5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
-6. **Run `status`** and tell the user tracking is on.
+6. **Run `status`** and tell the user tracking is on. If the plugin was installed during this conversation and no Task Queue note came with the user's prompts, its hooks aren't loaded yet: tell the user to type `/reload-plugins` so tracking starts in this session instead of the next one.
 
 If the user says they don't want tracking, run `disable`. That stops the tracking and the setup reminder at the start of each session.
 

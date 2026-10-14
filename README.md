@@ -35,9 +35,11 @@ Inside Claude Code:
 /plugin install task-queue@task-queue-skill
 ```
 
+Installing from the `/plugin` panel loads the plugin into the current session when you close the panel. If you installed it with `claude plugin install` in a terminal, type `/reload-plugins` in your session (or start a new one) to load its hooks.
+
 ### Set up
 
-Start a new session. The plugin notices it isn't set up yet, and Claude asks you for:
+Send your next prompt. The plugin notices it isn't set up yet, and Claude asks you for:
 
 1. your Task Queue API URL, e.g. `http://localhost:8000/api/v1`. The Personal API link from your profile works too.
 2. your personal API key.
