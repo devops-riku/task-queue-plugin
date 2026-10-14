@@ -266,10 +266,14 @@ async function checkIn(s, host) {
   }
 }
 
-/** Checks in once per conversation, from SessionStart or the first prompt, whichever runs first. */
+/** Checks in once per conversation, from SessionStart or the first prompt, whichever runs first. One attempt,
+ * whatever the outcome, so a slow server delays one prompt at most; the next conversation tries again. Before
+ * setup there is nothing to send, so the first prompt after setup checks in. */
 async function checkInOnce(session, s, host) {
-  if (readState(session).checkedIn) return;
-  if (await checkIn(s, host)) writeState(session, { ...readState(session), checkedIn: true });
+  const state = readState(session);
+  if (state.checkedIn || !connected(s)) return;
+  writeState(session, { ...state, checkedIn: true });
+  await checkIn(s, host);
 }
 
 /** Reports a change made by command (enable, disable) for every agent this tracker has checked in from.
