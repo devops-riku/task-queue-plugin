@@ -12,7 +12,8 @@
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
- *   start [--session <id>] --estimate <minutes> "<title>"   Open and start a task.
+ *   start [--session <id>] --estimate <minutes> [--description "<text>"] "<title>"
+ *                                                            Open and start a task.
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
@@ -55,7 +56,9 @@ const DEFAULT_IDLE = 60;
 // Conversations that never ended properly (a closed terminal) are closed by the next session after this.
 const ABANDONED_MS = 12 * 60 * 60 * 1000;
 const TITLE_MAX = 200;
-const PROMPT_MAX = 19000; // the description takes 20,000 characters; the rest is the footer
+// A task's description takes 20,000 characters: the agent's own summary, the user's request, then the footer.
+const SUMMARY_MAX = 2000;
+const PROMPT_MAX = 16000;
 const COMMENT_MAX = 5000;
 const NOTE_MAX = 4000;
 const MANUAL = 'manual';
@@ -371,14 +374,17 @@ function tell(host, event, text) {
 
 /** What the agent is told with each prompt: where the work stands and the exact commands to run. */
 function guidance(session, task) {
-  const start = `${COMMAND} start --session ${session} --estimate <minutes> "<short title>"`;
+  const start = `${COMMAND} start --session ${session} --estimate <minutes> --description "<what the work is and why, in one or two sentences>" "<short title>"`;
   const done = `${COMMAND} done --session ${session} "<one-line summary of what you did>"`;
+  // Admins read these. One line without $, backticks or backslashes also keeps the command auto-approved.
+  const fields = '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.';
   if (!task) {
     return [
       'Task Queue tracking is on: your work for the user is logged as tasks in their Task Queue account.',
       '- If this request is work (a change, a fix, an investigation, a document; not a quick question or a thank-you), log it before anything else by running:',
       `  ${start}`,
       `  with your honest estimate of the minutes you need to finish it (at most ${MAX_ESTIMATE}; split longer work into several tasks).`,
+      fields,
       '- When that work is finished (done, not when you stop to ask the user something), run this as your last step. It records the end date and time:',
       `  ${done}`,
     ].join('\n');
@@ -389,6 +395,7 @@ function guidance(session, task) {
     `  ${done}`,
     '- If it is new, unrelated work, first run the line below. It closes the open task at the time you last finished replying:',
     `  ${start}`,
+    fields,
   ].join('\n');
 }
 
@@ -705,15 +712,19 @@ const COMMANDS = {
     const s = loadSettings();
     if (!ready(s)) fail('Not set up: run setup --url <API URL> --key <API key> --category <VALUE> first.');
     const title = rest.join(' ').trim();
-    if (!title) fail('Usage: start --estimate <minutes> "<short title>"');
+    if (!title) fail('Usage: start --estimate <minutes> --description "<what the work is>" "<short title>"');
     const estimate = estimateOf(flags, s);
     const session = typeof flags.session === 'string' ? flags.session : MANUAL;
     const pending = readState(session).prompt;
-    let description = typeof flags.description === 'string' ? flags.description : '';
-    if (!description && pending && s.promptText) {
-      const project = pending.cwd ? path.basename(pending.cwd) : '';
+    // The agent's summary of the work, then (unless prompt text is off) the user's request it came from.
+    const summary = typeof flags.description === 'string' ? clip(flags.description.trim(), SUMMARY_MAX) : '';
+    const request = pending && s.promptText ? clip(pending.text, PROMPT_MAX) : '';
+    let description = '';
+    if (summary || request) {
+      const project = request && pending.cwd ? path.basename(pending.cwd) : '';
       const footer = [project && `Project: ${project}`, `Session: ${session}`, 'Logged by the Task Queue tracker for AI coding agents.'].filter(Boolean).join('\n');
-      description = `${clip(pending.text, PROMPT_MAX)}\n\n---\n${footer}`;
+      const body = [summary, request && (summary ? `Request:\n${request}` : request)].filter(Boolean).join('\n\n');
+      description = `${body}\n\n---\n${footer}`;
     }
     const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined }).catch((err) =>
       fail(`Could not open the task: ${err.code}: ${err.message}`),

@@ -8,7 +8,7 @@ argument-hint: "[setup | status | enable | disable]"
 
 Once this is set up, you log your own work in the user's Task Queue queue:
 
-- **New work:** before starting a request that is work (a change, a fix, an investigation, a document), you open a task with your honest estimate of the minutes you need. Quick questions and thank-yous get no task.
+- **New work:** before starting a request that is work (a change, a fix, an investigation, a document), you open a task with your honest estimate of the minutes you need and a one- or two-sentence description of the work. Quick questions and thank-yous get no task.
 - **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes.
 - **When the work is finished:** you mark the task done as your last step, which records the end date and time.
 

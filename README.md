@@ -87,7 +87,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 
 | When | What happens in Task Queue |
 |------|----------------------------|
-| You ask for new work | The agent runs `start` with a title and its estimate. A task is created in your queue and started. Your request is its description. |
+| You ask for new work | The agent runs `start` with a title, a one- or two-sentence description of the work and its estimate. A task is created in your queue and started. Its description is the agent's, followed by your request (unless prompt text is off). |
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
@@ -121,7 +121,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set idle <minutes>` | Sets how long a conversation may sit idle before its open task is closed (default 60) |
 | `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
-| `start --estimate <minutes> "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
+| `start --estimate <minutes> --description "<text>" "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 

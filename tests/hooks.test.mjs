@@ -78,6 +78,10 @@ const fake = spawn(process.execPath, ['-e', `
       fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null }) + '\\n');
       r.setHeader('content-type', 'application/json');
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
+      if (q.method === 'POST' && q.url.endsWith('/my/tasks')) {
+        const task = { task_number: 'TASK-9', title: JSON.parse(b).title, queue_entered_at: new Date().toISOString() };
+        return r.end(JSON.stringify({ link: { url: 'http://tq/api/v1/my/tasks/t9' }, task }));
+      }
       if (q.url.startsWith('/missing')) { r.statusCode = 404; return r.end(JSON.stringify({ code: 'NOT_FOUND', message: 'Not Found' })); }
       r.end(JSON.stringify({ recorded: [] }));
     });
@@ -135,6 +139,32 @@ try {
   assert.deepEqual(requests().slice(mark).map((r) => [r.body.host, r.body.enabled]).sort(), [['claude', false], ['codex', false]]); ok('disable reports off for each agent');
   const down = spawnSync(process.execPath, [TQ, 'disable'], { env: { ...process.env, TASK_QUEUE_HOME: h, ...READY }, encoding: 'utf8' });
   assert.doesNotMatch(down.stdout, /Reported/); ok('disable does not claim a report it could not make');
+  // Task descriptions: the agent's summary, then the user's request unless prompt text is off, then a footer.
+  const startTask = (home, args) => {
+    const r = spawnSync(process.execPath, [TQ, 'start', ...args], { env: { ...process.env, TASK_QUEUE_HOME: home, ...at('ok') }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return requests().filter((q) => q.url === '/ok/api/v1/my/tasks').at(-1).body;
+  };
+  const summary = 'Sign-in sends people to the home page instead of the page they asked for.';
+  h = fresh('desc-on');
+  assert.match(hook(h, 'prompt', { session_id: 'd', prompt: 'fix the login redirect', cwd: 'D:/work/shop' }, { env: at('ok') }), /--description "/);
+  ok('guidance asks for a description');
+  let body = startTask(h, ['--session', 'd', '--estimate', '20', '--description', summary, 'Fix the login redirect']);
+  assert.equal(body.description, `${summary}\n\nRequest:\nfix the login redirect\n\n---\nProject: shop\nSession: d\nLogged by the Task Queue tracker for AI coding agents.`);
+  ok('description: summary, then the request, then the footer');
+  h = fresh('desc-off'); fs.writeFileSync(path.join(h, 'config.json'), '{"promptText":false}');
+  hook(h, 'prompt', { session_id: 'd', prompt: 'secret request text', cwd: 'D:/work/shop' }, { env: at('ok') });
+  body = startTask(h, ['--session', 'd', '--estimate', '20', '--description', summary, 'Fix the login redirect']);
+  assert.equal(body.description, `${summary}\n\n---\nSession: d\nLogged by the Task Queue tracker for AI coding agents.`);
+  ok('prompt text off: summary only, no request and no project');
+  h = fresh('desc-none');
+  hook(h, 'prompt', { session_id: 'd', prompt: 'fix it', cwd: 'D:/work/shop' }, { env: at('ok') });
+  assert.match(startTask(h, ['--session', 'd', '--estimate', '20', 'Fix it']).description, /^fix it\n\n---\nProject: shop/);
+  ok('no description given: the request, as before');
+  const cmd = `${tracker(h)} start --session d --estimate 20 --description "Sign-in (signed out) goes home, not back." "Fix login"`;
+  assert.equal(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: cmd } })).hookSpecificOutput.permissionDecision, 'allow');
+  ok('a start with a description is still approved');
+
   // Idle closing: only after the agent finished replying and nothing happened since.
   const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
   const task = { id: 't1', number: 'TASK-1', title: 'Long work', estimate: 30, startedAt: ago(120) };
@@ -146,7 +176,8 @@ try {
   assert.match(hook(h, 'prompt', { session_id: 'long', prompt: 'mid-turn message' }, { env: at('ok') }), /TASK-1 "Long work" is in progress/);
   assert.equal(JSON.parse(fs.readFileSync(statePath(h, 'long'), 'utf8')).task?.id, 't1'); ok('long agent turn: task kept open');
   // A real idle stretch: the agent replied 90 min ago and nothing happened since.
-  fs.writeFileSync(statePath(h, 'idle'), JSON.stringify({ task, lastStop: ago(90), lastActivity: ago(90) }));
+  const replied = ago(90); // the stop hook writes both from one timestamp
+  fs.writeFileSync(statePath(h, 'idle'), JSON.stringify({ task, lastStop: replied, lastActivity: replied }));
   hook(h, 'prompt', { session_id: 'idle', prompt: 'back again' }, { env: at('ok') });
   assert.equal(JSON.parse(fs.readFileSync(statePath(h, 'idle'), 'utf8')).task, null);
   assert.ok(requests().some((r) => r.url === '/ok/api/v1/my/tasks/t1' && r.body.ended_at)); ok('real idle: task closed');
