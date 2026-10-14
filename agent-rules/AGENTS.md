@@ -15,21 +15,21 @@ Use a short, plain summary of the work as the title. Never put secrets or pasted
 
 ## How: the tracker script (recommended)
 
-You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-skill` repository:
+You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-plugin` repository:
 
 ```
-node <clone>/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
+node <clone>/plugins/task-queue/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
 ```
 
 Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your commands:
 
 | When | Run |
 |------|-----|
-| New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> "<short title>"` |
+| New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" "<short title>"` |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
 
-In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 "Fix the login redirect"`.
+In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
 `start` prints the task number, e.g. `Started TASK-000123: Fix the login redirect (estimate 20 minutes).` `done` prints when the task ended and how long it took against your estimate.
 
@@ -48,7 +48,7 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
 
 1. **Open the task.** `POST $TASK_QUEUE_URL/my/tasks` with this body:
    ```json
-   {"title": "<short title>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
+   {"title": "<short title>", "description": "<what the work is, in one or two sentences>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
    ```
    From the response, keep:
    - the task id, the last segment of `link.url`;
@@ -70,10 +70,11 @@ In PowerShell, use `Invoke-RestMethod` or `curl.exe`, never plain `curl`. Every 
 
 ## Using this file with your agent
 
+Claude Code, Codex and Gemini CLI don't need this file: install the plugin or extension from this repository instead (see the README). Its hooks do the same, and close tasks the agent leaves open.
+
 | Agent | Where the file goes |
 |-------|---------------------|
-| Codex, Cursor, Amp, Jules and other agents that read `AGENTS.md` | `AGENTS.md` in the project root |
-| Gemini CLI | `GEMINI.md` |
+| Cursor, Amp, Jules and other agents that read `AGENTS.md` | `AGENTS.md` in the project root |
 | GitHub Copilot | `.github/copilot-instructions.md` |
 | Cursor (rules) | `.cursor/rules/task-queue.mdc` |
 | Windsurf | `.windsurfrules` |

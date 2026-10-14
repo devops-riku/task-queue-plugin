@@ -1,0 +1,27 @@
+{
+  "name": "task-queue",
+  "version": "1.3.0",
+  "description": "Codex logs its own work as tasks in your Task Queue account: it opens a task with its estimate when new work starts and marks it done with the end time when finished, so admins can track AI coding activity.",
+  "author": {
+    "name": "devops-riku"
+  },
+  "repository": "https://github.com/devops-riku/task-queue-plugin",
+  "keywords": [
+    "task-queue",
+    "time-tracking",
+    "activity",
+    "hooks"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Task Queue",
+    "shortDescription": "Log Codex work as Task Queue tasks.",
+    "longDescription": "Codex opens a Task Queue task with its own estimate when new work starts, keeps follow-up prompts on that task, and marks it done with the end time when the work is finished.",
+    "developerName": "devops-riku",
+    "category": "Productivity",
+    "capabilities": [
+      "Write"
+    ]
+  }
+}

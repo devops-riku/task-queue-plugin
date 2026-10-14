@@ -8,17 +8,19 @@ argument-hint: "[setup | status | enable | disable]"
 
 Once this is set up, you log your own work in the user's Task Queue queue:
 
-- **New work:** before starting a request that is work (a change, a fix, an investigation, a document), you open a task with your honest estimate of the minutes you need. Quick questions and thank-yous get no task.
+- **New work:** before starting a request that is work (a change, a fix, an investigation, a document), you open a task with your honest estimate of the minutes you need and a one- or two-sentence description of the work. Quick questions and thank-yous get no task.
 - **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes.
 - **When the work is finished:** you mark the task done as your last step, which records the end date and time.
 
-Every prompt reminds you whether a task is open, and gives you the exact commands to run. The plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
+Every prompt reminds you whether a task is open, and gives you the exact commands to run. In Claude Code and Codex the plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
 
-Setup and settings use the bundled tracker:
+Setup and settings use the tracker. In Claude Code, run the bundled copy:
 
 ```
 node "${CLAUDE_SKILL_DIR}/scripts/tq.mjs" <command>
 ```
+
+Elsewhere (Codex, Gemini CLI), run `scripts/tq.mjs` next to this file, or the copy the plugin's hooks keep at `~/.task-queue/tq.mjs`. The hooks' setup note gives its full path.
 
 ## Setup
 
@@ -34,7 +36,7 @@ Do these in order when tracking isn't set up, or when the user asks to set it up
 3. **If setup asks for a workspace**, show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
 4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
 5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
-6. **Run `status`** and tell the user tracking is on.
+6. **Run `status`** and tell the user tracking is on. If the plugin was installed during this conversation and no Task Queue note came with the user's prompts, its hooks aren't loaded yet: tell the user to type `/reload-plugins` so tracking starts in this session instead of the next one.
 
 If the user says they don't want tracking, run `disable`. That stops the tracking and the setup reminder at the start of each session.
 
@@ -47,7 +49,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `workspaces` | Workspaces the account can add tasks to, with their category values |
 | `set workspace <id>` / `set category <VALUE>` | Where tasks go |
 | `set idle <minutes>` | How long a conversation may sit idle before its open task is closed (default 60) |
-| `set estimate <minutes>` | The estimate used when `start` is given none (default 30) |
+| `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 ## When tracking fails
 
