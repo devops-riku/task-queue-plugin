@@ -37,7 +37,14 @@ const CONFIG = path.join(HOME, 'config.json');
 const SESSIONS = path.join(HOME, 'sessions');
 const LOG = path.join(HOME, 'tracker.log');
 const STABLE = path.join(HOME, 'tq.mjs');
+const CHECK_INS = path.join(HOME, 'check-ins.json');
+// The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
+const VERSION = '1.3.0';
 const TIMEOUT_MS = 5000;
+// Check-ins run while a session starts, so they give up sooner than other calls.
+const CHECK_IN_TIMEOUT_MS = 2500;
+// After a server says it has no check-in endpoint, wait this long before trying it again.
+const UNSUPPORTED_RETRY_MS = 24 * 60 * 60 * 1000;
 // Used when `start` is given no estimate.
 const DEFAULT_ESTIMATE = 30;
 // The longest estimate the tracker sends (8 hours); longer work is split into several tasks. This only guards
@@ -196,14 +203,14 @@ class ApiError extends Error {
   }
 }
 
-async function api(s, method, route, body) {
+async function api(s, method, route, body, timeout = TIMEOUT_MS) {
   let res;
   try {
     res = await fetch(s.url + route, {
       method,
       headers: { Authorization: `Bearer ${s.key}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeout),
     });
   } catch (err) {
     throw new ApiError(0, 'UNREACHABLE', `Task Queue at ${s.url} didn't answer (${err.cause?.code ?? err.name}).`);
@@ -231,6 +238,46 @@ function notBefore(at, floor) {
   const a = Date.parse(at);
   const f = Date.parse(floor);
   return Number.isNaN(f) || a >= f ? new Date(a).toISOString() : floor;
+}
+
+/** Tells Task Queue which agent this tracker runs in, its version and whether tracking is on, so admins can see
+ * on the audit log when it's paused, resumed, or goes silent (removed). Nothing else is sent. Never throws and
+ * never prints: a failure is only logged, and a server without the endpoint is left alone for a day. */
+async function checkIn(s, host) {
+  if (!connected(s)) return false;
+  const seen = readJson(CHECK_INS) ?? {};
+  if (seen.unsupportedAt && Date.now() - Date.parse(seen.unsupportedAt) < UNSUPPORTED_RETRY_MS) return false;
+  try {
+    const body = { host, version: VERSION, enabled: s.enabled };
+    if (s.workspace) body.workspace_id = s.workspace;
+    const { recorded } = await api(s, 'POST', '/my/tracker', body, CHECK_IN_TIMEOUT_MS);
+    if (recorded?.length) log('check-in', `${host}: ${recorded.join(', ')}`);
+    writeJson(CHECK_INS, { hosts: [...new Set([...(seen.hosts ?? []), host])] });
+    return true;
+  } catch (err) {
+    if (err.status === 404 && !/workspace/i.test(err.message)) {
+      // An older Task Queue without /my/tracker. (A workspace that's gone is a 404 too, and is logged each time.)
+      writeJson(CHECK_INS, { ...seen, unsupportedAt: new Date().toISOString() });
+      log('check-in', 'this Task Queue has no check-in endpoint; trying again in a day');
+    } else {
+      log('check-in', `${host} failed: ${err.code} ${err.message}`);
+    }
+    return false;
+  }
+}
+
+/** Checks in once per conversation, from SessionStart or the first prompt, whichever runs first. */
+async function checkInOnce(session, s, host) {
+  if (readState(session).checkedIn) return;
+  if (await checkIn(s, host)) writeState(session, { ...readState(session), checkedIn: true });
+}
+
+/** Reports a change made by command (enable, disable) for every agent this tracker has checked in from.
+ * Returns whether Task Queue got it. */
+async function checkInEverywhere(s) {
+  let reported = false;
+  for (const host of (readJson(CHECK_INS) ?? {}).hosts ?? []) reported = (await checkIn(s, host)) || reported;
+  return reported;
 }
 
 /** The note for a task the agent never marked done: why it was closed, and the agent's last reply. */
@@ -386,8 +433,10 @@ const HOOKS = {
     if (!prompt || prompt.startsWith('/')) return; // empty, or a slash command
     const session = input.session_id || 'default';
     // SessionStart doesn't run for a plugin loaded mid-conversation (/reload-plugins), so the prompt hook also
-    // does its per-conversation work: keep the stable copy current and ask for setup until it's done.
+    // does its per-conversation work: keep the stable copy current, check in (paused or not), and ask for setup
+    // until it's done.
     syncStableCopy();
+    await checkInOnce(session, s, host);
     if (!ready(s)) {
       const request = setupRequest(session, s);
       if (request) tell(host, 'BeforeAgent', request);
@@ -395,7 +444,11 @@ const HOOKS = {
     }
     if (!s.enabled) return;
     let state = readState(session);
-    if (state.task && Date.now() - lastActive(state) > s.idle * 60_000) {
+    // Idle means the agent finished replying and nothing happened since. A prompt, task or note after its last
+    // reply means it is still working on a turn (a message sent mid-turn, or a background job reporting back),
+    // however long that turn takes.
+    const midTurn = !state.lastStop || Date.parse(state.lastActivity ?? 0) > Date.parse(state.lastStop);
+    if (state.task && !midTurn && Date.now() - lastActive(state) > s.idle * 60_000) {
       // Idle too long: that stretch of work ended when the agent last finished replying (or was last prompted).
       try {
         const closed = await closeTask(s, session, unfinished(state, 'closed after the conversation went idle.'), state.lastStop ?? state.lastActivity);
@@ -428,9 +481,10 @@ const HOOKS = {
     writeState(session, { ...state, prompt: null, lastStop: now, lastActivity: now, lastReply: reply ? clip(reply, NOTE_MAX) : state.lastReply });
   },
 
-  /** Keep the stable copy current, close conversations that never ended, and ask for setup until it's done. */
+  /** Keep the stable copy current, check in, close conversations that never ended, and ask for setup until it's done. */
   async 'session-start'(input, s, host) {
     syncStableCopy();
+    await checkInOnce(input.session_id || 'default', s, host);
     if (connected(s) && fs.existsSync(SESSIONS)) {
       for (const name of fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json'))) {
         const session = name.slice(0, -'.json'.length);
@@ -633,11 +687,14 @@ const COMMANDS = {
 
   async enable() {
     const s = saveSettings({ enabled: true });
+    await checkInEverywhere(s);
     summary(s, ready(s) ? [] : ['Tracking starts once setup is finished.']);
   },
 
   async disable() {
-    summary(saveSettings({ enabled: false }));
+    const s = saveSettings({ enabled: false });
+    const reported = await checkInEverywhere(s);
+    summary(s, reported ? ['Reported to Task Queue: its audit log shows tracking is off.'] : []);
   },
 
   async start({ rest, flags }) {

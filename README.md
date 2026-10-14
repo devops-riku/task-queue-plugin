@@ -104,6 +104,7 @@ Tracking never blocks you. If Task Queue is down or the key stops working, the a
 ## Privacy
 
 - **Your request and your follow-up prompts go to Task Queue, where admins can read them,** along with the agent's titles and summaries. Don't paste secrets into requests while tracking is on. Run `set prompt-text off` to keep your prompts out; titles and summaries are still sent.
+- **The tracker checks in with Task Queue** at the start of each session, and when you turn tracking off or on. A check-in says which agent it runs in, the plugin version and whether tracking is on; never prompts or project names. Admins see on the audit log when tracking is connected, paused or resumed, and when a tracker stops checking in for several days (removed, blocked, or simply not used).
 - **Your settings and key stay on your machine,** in `~/.task-queue/config.json`. Set `TASK_QUEUE_HOME` to keep that folder somewhere else. The key is never printed: `status` shows only its first characters.
 
 ## Commands
