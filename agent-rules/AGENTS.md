@@ -15,7 +15,7 @@ Use a short, plain summary of the work as the title. Never put secrets or pasted
 
 ## How: the tracker script (recommended)
 
-You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-skill` repository:
+You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-plugin` repository:
 
 ```
 node <clone>/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>

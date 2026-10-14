@@ -31,8 +31,8 @@ You need three things:
 Inside Claude Code:
 
 ```
-/plugin marketplace add devops-riku/task-queue-skill
-/plugin install task-queue@task-queue-skill
+/plugin marketplace add devops-riku/task-queue-plugin
+/plugin install task-queue@task-queue-plugin
 ```
 
 Installing from the `/plugin` panel loads the plugin into the current session when you close the panel. If you installed it with `claude plugin install` in a terminal, type `/reload-plugins` in your session (or start a new one) to load its hooks.
@@ -102,7 +102,7 @@ These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK
 
 ### Uninstall
 
-1. Run `/plugin uninstall task-queue@task-queue-skill`.
+1. Run `/plugin uninstall task-queue@task-queue-plugin`.
 2. Delete the `~/.task-queue` folder.
 
 ## Other agents

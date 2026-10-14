@@ -5,7 +5,7 @@
   "author": {
     "name": "devops-riku"
   },
-  "repository": "https://github.com/devops-riku/task-queue-skill",
+  "repository": "https://github.com/devops-riku/task-queue-plugin",
   "keywords": [
     "task-queue",
     "time-tracking",
