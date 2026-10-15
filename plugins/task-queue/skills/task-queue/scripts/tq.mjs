@@ -12,7 +12,7 @@
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
- *   start [--session <id>] --estimate <minutes> [--description "<text>"] "<title>"
+ *   start [--session <id>] --estimate <minutes> [--description "<text>"] [--folder "<name>"] "<title>"
  *                                                            Open and start a task.
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
@@ -40,7 +40,7 @@ const LOG = path.join(HOME, 'tracker.log');
 const STABLE = path.join(HOME, 'tq.mjs');
 const CHECK_INS = path.join(HOME, 'check-ins.json');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -56,6 +56,7 @@ const DEFAULT_IDLE = 60;
 // Conversations that never ended properly (a closed terminal) are closed by the next session after this.
 const ABANDONED_MS = 12 * 60 * 60 * 1000;
 const TITLE_MAX = 200;
+const FOLDER_MAX = 60;
 // A task's description takes 20,000 characters: the agent's own summary, the user's request, then the footer.
 const SUMMARY_MAX = 2000;
 const PROMPT_MAX = 16000;
@@ -179,6 +180,8 @@ function loadSettings() {
     estimate: Math.min(Number(file.estimate || DEFAULT_ESTIMATE), MAX_ESTIMATE),
     idle: Number(file.idle || DEFAULT_IDLE),
     promptText: file.promptText ?? true,
+    // File each task in a folder named after the project the agent works in.
+    folders: file.folders ?? true,
     // Off only when the user turned it off; environment-only setups count as on.
     enabled: file.enabled ?? true,
   };
@@ -235,6 +238,25 @@ async function api(s, method, route, body, timeout = TIMEOUT_MS) {
 }
 
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** The project a working directory belongs to: its git repository's folder name, or else the directory's own.
+ * None for the home directory or a drive root, which aren't projects. */
+function projectOf(cwd) {
+  if (!cwd) return '';
+  const start = path.resolve(cwd);
+  let root = start;
+  for (let dir = start, i = 0; i < 64; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      root = dir;
+      break;
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  if (root === path.dirname(root) || path.resolve(root) === path.resolve(os.homedir())) return '';
+  return clip(path.basename(root).trim(), FOLDER_MAX);
+}
 
 /** The later of two instants, as the string to send (ended_at can't be before started_at). */
 function notBefore(at, floor) {
@@ -296,13 +318,23 @@ const when = (iso) =>
   new Date(iso).toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 /** Creates a task in the user's own queue with the agent's estimate and starts it at once. */
-async function openTask(s, session, { title, estimate, description }) {
+async function openTask(s, session, { title, estimate, description, folder }) {
   const state = readState(session);
   if (state.task) await closeTask(s, session, unfinished(state, 'closed when new work started.'), state.lastStop);
   const body = { title: clip(title, TITLE_MAX), category: s.category, estimate_minutes: estimate };
   if (s.workspace) body.workspace_id = s.workspace;
   if (description) body.description = description;
-  const doc = await api(s, 'POST', '/my/tasks', body);
+  if (folder) body.folder = folder;
+  let doc;
+  try {
+    doc = await api(s, 'POST', '/my/tasks', body);
+  } catch (err) {
+    // A Task Queue without project folders refuses the field: file it in the default folder instead.
+    if (!(folder && err.status === 422 && /folder/i.test(err.message))) throw err;
+    log('start', `this Task Queue has no project folders; "${folder}" not used`);
+    delete body.folder;
+    doc = await api(s, 'POST', '/my/tasks', body);
+  }
   // The id, not link.url: that carries the server's public address, which may differ from the configured one.
   const id = doc.link.url.split('/').pop();
   const startedAt = doc.task.queue_entered_at;
@@ -373,11 +405,14 @@ function tell(host, event, text) {
 }
 
 /** What the agent is told with each prompt: where the work stands and the exact commands to run. */
-function guidance(session, task) {
+function guidance(session, task, project) {
   const start = `${COMMAND} start --session ${session} --estimate <minutes> --description "<what the work is and why, in one or two sentences>" "<short title>"`;
   const done = `${COMMAND} done --session ${session} "<one-line summary of what you did>"`;
   // Admins read these. One line without $, backticks or backslashes also keeps the command auto-approved.
-  const fields = '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.';
+  const fields = [
+    '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.',
+    ...(project ? [`  The task is filed in the Task Queue folder "${project}", after this project. To file it under another project, add --folder "<project name>".`] : []),
+  ].join('\n');
   if (!task) {
     return [
       'Task Queue tracking is on: your work for the user is logged as tasks in their Task Queue account.',
@@ -471,7 +506,7 @@ const HOOKS = {
     }
     const now = new Date().toISOString();
     writeState(session, { ...state, prompt: { text: prompt, at: now, cwd: input.cwd ?? null }, lastActivity: now });
-    tell(host, 'BeforeAgent', guidance(session, state.task));
+    tell(host, 'BeforeAgent', guidance(session, state.task, s.folders ? projectOf(input.cwd) : ''));
   },
 
   /** The agent finished a reply: note a follow-up prompt on the task it continued, and remember when it finished. */
@@ -608,6 +643,7 @@ function summary(s, extra = []) {
     `Category: ${s.category ?? 'not set'}`,
     `Estimates: the agent's own, per task (${s.estimate} minutes if it gives none)`,
     `Idle limit: ${s.idle} minutes, after which an open task is closed at the agent's last reply`,
+    `Project folders: ${s.folders ? 'on (each task is filed in a folder named after its project)' : 'off (tasks go to the default folder)'}`,
     `Prompt text sent: ${s.promptText ? 'yes (the request as the description, follow-up prompts as notes, the final reply as the note when not marked done)' : 'no'}`,
     'Approvals: none needed (the plugin approves its own tracker commands)',
     ...extra,
@@ -647,13 +683,16 @@ const COMMANDS = {
     const [field, ...words] = rest;
     const value = words.join(' ').trim();
     let s = loadSettings();
-    const usage = 'Usage: set <workspace|category|estimate|idle|prompt-text> <value>';
+    const usage = 'Usage: set <workspace|category|estimate|idle|prompt-text|folders> <value>';
     if (!value) fail(usage);
     if (field === 'estimate' || field === 'idle') {
       const n = Number(value);
       if (!(Number.isInteger(n) && n > 0)) fail(`The ${field} is whole minutes, e.g. ${field === 'idle' ? 60 : 30}.`);
       if (field === 'estimate' && n > MAX_ESTIMATE) fail(`The estimate can be at most ${MAX_ESTIMATE} minutes.`);
       s = saveSettings({ [field]: n });
+    } else if (field === 'folders') {
+      if (!['on', 'off'].includes(value)) fail('Usage: set folders on|off');
+      s = saveSettings({ folders: value === 'on' });
     } else if (field === 'prompt-text') {
       if (!['on', 'off'].includes(value)) fail('Usage: set prompt-text on|off');
       s = saveSettings({ promptText: value === 'on' });
@@ -726,7 +765,8 @@ const COMMANDS = {
       const body = [summary, request && (summary ? `Request:\n${request}` : request)].filter(Boolean).join('\n\n');
       description = `${body}\n\n---\n${footer}`;
     }
-    const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined }).catch((err) =>
+    const folder = typeof flags.folder === 'string' ? clip(flags.folder.trim(), FOLDER_MAX) : s.folders ? projectOf(pending?.cwd) : '';
+    const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined, folder: folder || undefined }).catch((err) =>
       fail(`Could not open the task: ${err.code}: ${err.message}`),
     );
     out(`Started ${task.number}: ${task.title} (estimate ${task.estimate} minutes${estimate.given ? '' : ', the default: no --estimate given'}).`);

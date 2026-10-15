@@ -9,7 +9,7 @@
       "name": "task-queue",
       "source": "./plugins/task-queue",
       "description": "The agent logs its own work as Task Queue tasks, with its estimate and the start and end time.",
-      "version": "1.3.0"
+      "version": "1.4.0"
     }
   ]
 }
