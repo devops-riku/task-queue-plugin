@@ -6,7 +6,7 @@ Your AI coding agent logs its own work as tasks in your Task Queue queue:
 - **Follow-up prompts on the same work:** these stay on that task as notes, instead of creating new tasks.
 - **When the work is finished:** the agent marks the task done, which records the end date and time.
 
-Admins see these tasks like any other work: what was done, when it was done, and how the time compared with the estimate. Overtime reports add up those estimates, so it's how much work there was that counts, not how many prompts were sent.
+Admins see these tasks like any other work: what was done, when it was done, and how the time compared with the estimate. Overtime reports count the time each task was in progress, from the start the agent records to the end it records at its last reply, so it's the time the work took that counts, not how many prompts were sent. Sessions running at the same time count once.
 
 It installs as a plugin in **Claude Code** and **Codex**, and as an extension in **Gemini CLI**, all from this repository. Other agents follow a rules file.
 
