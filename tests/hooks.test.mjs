@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 
 const TQ = process.argv[2] ?? fileURLToPath(new URL('../plugins/task-queue/skills/task-queue/scripts/tq.mjs', import.meta.url));
 const DIR = process.argv[3] ?? fs.mkdtempSync(path.join(os.tmpdir(), 'tq-hooks-'));
+// What check-ins must report: the plugin's version, which the tracker keeps in step with the manifests.
+const VERSION = JSON.parse(fs.readFileSync(new URL('../plugins/task-queue/.claude-plugin/plugin.json', import.meta.url), 'utf8')).version;
 let n = 0;
 const fresh = (name) => { const d = path.join(DIR, name); fs.rmSync(d, { recursive: true, force: true }); fs.mkdirSync(d, { recursive: true }); return d; };
 const READY = { TASK_QUEUE_URL: 'http://127.0.0.1:9/api/v1', TASK_QUEUE_API_KEY: 'tqk_fake', TASK_QUEUE_CATEGORY: 'FEATURE' };
@@ -79,6 +81,11 @@ const fake = spawn(process.execPath, ['-e', `
       r.setHeader('content-type', 'application/json');
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
       if (q.method === 'POST' && q.url.endsWith('/my/tasks')) {
+        // /nofolder is an older Task Queue: it refuses the folder field.
+        if (q.url.startsWith('/nofolder') && JSON.parse(b).folder) {
+          r.statusCode = 422;
+          return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'folder: Extra inputs are not permitted' }));
+        }
         const task = { task_number: 'TASK-9', title: JSON.parse(b).title, queue_entered_at: new Date().toISOString() };
         return r.end(JSON.stringify({ link: { url: 'http://tq/api/v1/my/tasks/t9' }, task }));
       }
@@ -96,7 +103,7 @@ try {
     const before = requests().length;
     assert.equal(hook(h, 'session-start', { session_id: 'x' }, { host, env: at('ok') }), ''); ok(`${host}: check-in at session start prints nothing`);
     const sent = requests().slice(before);
-    assert.deepEqual(sent, [{ url: '/ok/api/v1/my/tracker', body: { host, version: '1.3.0', enabled: true } }]); ok(`${host}: check-in sends only agent, version and on/off`);
+    assert.deepEqual(sent, [{ url: '/ok/api/v1/my/tracker', body: { host, version: VERSION, enabled: true } }]); ok(`${host}: check-in sends only agent, version and on/off`);
     const out = hook(h, 'prompt', { session_id: 'x', prompt: 'work' }, { host, env: at('ok') });
     if (host === 'gemini') geminiJson(out, 'BeforeAgent'); else assert.match(out, /^Task Queue tracking is on/);
     assert.equal(requests().length, before + 1); ok(`${host}: one check-in per conversation, guidance output untouched`);
@@ -164,6 +171,39 @@ try {
   const cmd = `${tracker(h)} start --session d --estimate 20 --description "Sign-in (signed out) goes home, not back." "Fix login"`;
   assert.equal(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: cmd } })).hookSpecificOutput.permissionDecision, 'allow');
   ok('a start with a description is still approved');
+
+  // Project folders: each task is filed under its project, named after the git repository or working folder.
+  const startIn = (home, args, prefix = 'ok') => {
+    const r = spawnSync(process.execPath, [TQ, 'start', ...args], { env: { ...process.env, TASK_QUEUE_HOME: home, ...at(prefix) }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return requests().filter((q) => q.url === `/${prefix}/api/v1/my/tasks`);
+  };
+  const client = path.join(DIR, 'clients', 'Stars PH'); // need not exist
+  h = fresh('folders');
+  assert.match(hook(h, 'prompt', { session_id: 'f', prompt: 'fix checkout', cwd: client }, { env: at('ok') }), /folder "Stars PH"/);
+  ok('guidance names the project folder');
+  assert.equal(startIn(h, ['--session', 'f', '--estimate', '20', 'Fix checkout']).at(-1).body.folder, 'Stars PH');
+  ok('task filed under the working folder name');
+  const repo = path.join(DIR, 'Stars PH app');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'src', 'api'), { recursive: true });
+  hook(h, 'prompt', { session_id: 'g', prompt: 'fix the api', cwd: path.join(repo, 'src', 'api') }, { env: at('ok') });
+  assert.equal(startIn(h, ['--session', 'g', '--estimate', '20', 'Fix the api']).at(-1).body.folder, 'Stars PH app');
+  ok('inside a git repository: its name, from any subfolder');
+  hook(h, 'prompt', { session_id: 'home', prompt: 'misc', cwd: os.homedir() }, { env: at('ok') });
+  assert.equal(startIn(h, ['--session', 'home', '--estimate', '20', 'Misc']).at(-1).body.folder, undefined);
+  ok('home directory: no folder');
+  assert.equal(startIn(h, ['--session', 'f', '--estimate', '20', '--folder', 'Client X', 'Other work']).at(-1).body.folder, 'Client X');
+  ok('--folder overrides the project');
+  h = fresh('folders-off');
+  fs.writeFileSync(path.join(h, 'config.json'), '{"folders":false}');
+  assert.doesNotMatch(hook(h, 'prompt', { session_id: 'f', prompt: 'x', cwd: client }, { env: at('ok') }), /folder "/);
+  assert.equal(startIn(h, ['--session', 'f', '--estimate', '20', 'X']).at(-1).body.folder, undefined);
+  ok('folders off: none sent, none named');
+  h = fresh('folders-old');
+  hook(h, 'prompt', { session_id: 'f', prompt: 'x', cwd: client }, { env: at('nofolder') });
+  assert.deepEqual(startIn(h, ['--session', 'f', '--estimate', '20', 'X'], 'nofolder').slice(-2).map((q) => q.body.folder), ['Stars PH', undefined]);
+  ok('older server: retried without the folder');
 
   // Idle closing: only after the agent finished replying and nothing happened since.
   const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();

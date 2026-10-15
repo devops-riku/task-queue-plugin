@@ -87,7 +87,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 
 | When | What happens in Task Queue |
 |------|----------------------------|
-| You ask for new work | The agent runs `start` with a title, a one- or two-sentence description of the work and its estimate. A task is created in your queue and started. Its description is the agent's, followed by your request (unless prompt text is off). |
+| You ask for new work | The agent runs `start` with a title, a one- or two-sentence description of the work and its estimate. A task is created in your queue and started, in a folder named after your project. Its description is the agent's, followed by your request (unless prompt text is off). |
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
@@ -103,6 +103,7 @@ Tracking never blocks you. If Task Queue is down or the key stops working, the a
 
 ## Privacy
 
+- **Your project's name goes to Task Queue** as the folder each task is filed in: the name of the git repository the agent works in, or else of its working folder (never your home folder). Working in `D:\Stars PH`, tasks go to the folder Stars PH, made the first time it's needed. The agent can pass `--folder "<name>"` to file a task elsewhere. Run `set folders off` to keep project names out; tasks then go to the default folder.
 - **Your request and your follow-up prompts go to Task Queue, where admins can read them,** along with the agent's titles and summaries. Don't paste secrets into requests while tracking is on. Run `set prompt-text off` to keep your prompts out; titles and summaries are still sent.
 - **The tracker checks in with Task Queue** at the start of each session, and when you turn tracking off or on. A check-in says which agent it runs in, the plugin version, whether tracking is on and the workspace it logs to; never prompts or project names. Admins see on the audit log when tracking is connected, paused or resumed, and when a tracker stops checking in for several days (removed, blocked, or simply not used).
 - **Your settings and key stay on your machine,** in `~/.task-queue/config.json`. Set `TASK_QUEUE_HOME` to keep that folder somewhere else. The key is never printed: `status` shows only its first characters.
@@ -121,7 +122,8 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set idle <minutes>` | Sets how long a conversation may sit idle before its open task is closed (default 60) |
 | `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
-| `start --estimate <minutes> --description "<text>" "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
+| `set folders on\|off` | Sets whether tasks are filed in a folder named after the project (default on) |
+| `start --estimate <minutes> --description "<text>" [--folder "<name>"] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 

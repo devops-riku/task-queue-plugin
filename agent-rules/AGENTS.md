@@ -25,7 +25,7 @@ Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your com
 
 | When | Run |
 |------|-----|
-| New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" "<short title>"` |
+| New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" --folder "<project name>" "<short title>"` |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
 
@@ -48,7 +48,7 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
 
 1. **Open the task.** `POST $TASK_QUEUE_URL/my/tasks` with this body:
    ```json
-   {"title": "<short title>", "description": "<what the work is, in one or two sentences>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
+   {"title": "<short title>", "description": "<what the work is, in one or two sentences>", "folder": "<project name>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
    ```
    From the response, keep:
    - the task id, the last segment of `link.url`;

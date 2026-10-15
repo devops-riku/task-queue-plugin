@@ -51,6 +51,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set idle <minutes>` | How long a conversation may sit idle before its open task is closed (default 60) |
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
+| `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
 ## When tracking fails
 
 If `start` or `done` fails, tell the user once, in a sentence, and carry on with their request. Don't retry the tracking by hand. `status` and `~/.task-queue/tracker.log` show what went wrong. These are the usual causes:
