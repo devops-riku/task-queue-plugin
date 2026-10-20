@@ -1,5 +1,5 @@
 {
   "name": "task-queue",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Gemini CLI logs its own work as tasks in your Task Queue account: it opens a task with its estimate when new work starts and marks it done with the end time when finished."
 }

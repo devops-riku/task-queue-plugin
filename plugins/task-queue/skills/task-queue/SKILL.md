@@ -44,7 +44,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 
 | Command | What it does |
 |---------|--------------|
-| `status` | Settings (key masked), whether Task Queue answers, open tasks, recent log lines |
+| `status` | Settings (key masked), whether Task Queue answers, open tasks, changes waiting to be sent, recent log lines. Sends waiting changes if Task Queue answers. |
 | `enable` / `disable` | Turn tracking on or off; settings are kept |
 | `workspaces` | Workspaces the account can add tasks to, with their category values |
 | `set workspace <id>` / `set category <VALUE>` | Where tasks go |
@@ -52,6 +52,10 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 | `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
+## When Task Queue can't be reached
+
+`start`, `note` and `done` don't fail when Task Queue is down or the network drops. They print `Saved … on this machine` instead. The tracker keeps the change in `~/.task-queue/outbox` and sends it, with everything else kept, once Task Queue answers again. The hooks check quietly on every prompt and reply. That isn't a failure: don't mention it to the user, don't retry, carry on. `status` shows what's waiting and sends it if Task Queue answers.
+
 ## When tracking fails
 
 If `start` or `done` fails, tell the user once, in a sentence, and carry on with their request. Don't retry the tracking by hand. `status` and `~/.task-queue/tracker.log` show what went wrong. These are the usual causes:
@@ -60,6 +64,7 @@ If `start` or `done` fails, tell the user once, in a sentence, and carry on with
 |-------|-------|
 | `INVALID_API_KEY` | The key was revoked |
 | `USER_INACTIVE` | The account was disabled |
-| `UNREACHABLE` | The Task Queue server is down or the URL is wrong |
 | `FORBIDDEN` | The account lost *Take tasks* in that workspace |
 | `VALIDATION_ERROR` naming the category | The category was removed |
+
+`status` reports `UNREACHABLE` when Task Queue is down or the URL is wrong. Changes made meanwhile are kept, so check the URL only if it stays that way.
