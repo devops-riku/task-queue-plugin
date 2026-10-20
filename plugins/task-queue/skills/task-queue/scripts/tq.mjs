@@ -23,11 +23,16 @@
  * run of it, with nothing chained, piped, redirected or substituted. Gemini CLI doesn't let an extension
  * approve commands, so there the user approves them (or allows them with their own policy).
  *
+ * When Task Queue can't be reached, nothing fails: tasks opened, notes and completions are kept in
+ * ~/.task-queue/outbox, and the hooks quietly check for Task Queue again (at most every RETRY_MS) and send
+ * everything kept, in order, once it answers. `status` checks at once.
+ *
  * Settings live in ~/.task-queue/config.json (TASK_QUEUE_HOME moves the folder), with a copy of this script
  * at ~/.task-queue/tq.mjs so the commands have a stable path. The environment variables TASK_QUEUE_URL,
  * TASK_QUEUE_API_KEY, TASK_QUEUE_WORKSPACE and TASK_QUEUE_CATEGORY override the settings. No dependencies:
  * Node 18 or later.
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,13 +44,29 @@ const SESSIONS = path.join(HOME, 'sessions');
 const LOG = path.join(HOME, 'tracker.log');
 const STABLE = path.join(HOME, 'tq.mjs');
 const CHECK_INS = path.join(HOME, 'check-ins.json');
+// Changes Task Queue didn't get because it couldn't be reached: one file each, sent oldest first once it answers.
+const OUTBOX = path.join(HOME, 'outbox');
+// Tasks opened from the outbox, by the local ref they had until then: their id and number in Task Queue.
+const OPENED = path.join(HOME, 'opened.json');
+// When the last try to send the outbox failed, and why.
+const SYNC = path.join(HOME, 'sync.json');
+// Held while one process sends the outbox, so two conversations never send the same change twice.
+const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
 // After a server says it has no check-in endpoint, wait this long before trying it again.
 const UNSUPPORTED_RETRY_MS = 24 * 60 * 60 * 1000;
+// After Task Queue didn't answer, hooks wait this long before checking again, so they stay quick while it's down.
+const RETRY_MS = 30 * 1000;
+// One pass over the outbox stops after this long; the rest goes on the next one.
+const SYNC_BUDGET_MS = 10 * 1000;
+// A lock older than this was left by a process that died while sending.
+const LOCK_STALE_MS = 60 * 1000;
+// Opened tasks are remembered this long, past any conversation that could still name them by their ref.
+const OPENED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 // Used when `start` is given no estimate.
 const DEFAULT_ESTIMATE = 30;
 // The longest estimate the tracker sends (8 hours); longer work is split into several tasks. This only guards
@@ -153,8 +174,14 @@ function isTrackerCommand(command) {
 
 const stateFile = (session) => path.join(SESSIONS, `${String(session).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`);
 
-/** One conversation's state: its open task (if any), its pending prompt, and when it was last active. */
-const readState = (session) => readJson(stateFile(session)) ?? {};
+/** One conversation's state: its open task (if any), its pending prompt, and when it was last active. A task
+ * opened while Task Queue couldn't be reached gets its id and number here once the outbox has opened it. */
+function readState(session) {
+  const state = readJson(stateFile(session)) ?? {};
+  const made = state.task && !state.task.number && state.task.ref ? opened(state.task.ref) : null;
+  if (made) state.task = { ...state.task, id: made.id, number: made.number };
+  return state;
+}
 const writeState = (session, state) => writeJson(stateFile(session), state);
 
 // ------------------------------------------------------------------ settings
@@ -237,6 +264,10 @@ async function api(s, method, route, body, timeout = TIMEOUT_MS) {
   return data;
 }
 
+/** Task Queue didn't answer, or the proxy in front of it says it's down: worth trying again later. Anything else
+ * (a revoked key, a refused field) won't change by waiting. */
+const unreachable = (err) => err instanceof ApiError && [0, 502, 503, 504].includes(err.status);
+
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** The project a working directory belongs to: its git repository's folder name, or else the directory's own.
@@ -316,8 +347,200 @@ const lastActive = (state) => Date.parse(state.lastActivity ?? state.task?.start
 const minutes = (from, to) => Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 60000));
 const when = (iso) =>
   new Date(iso).toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+/** A task by its number, or by its title while it's still waiting in the outbox. */
+const named = (task) => task.number ?? `"${task.title}"`;
 
-/** Creates a task in the user's own queue with the agent's estimate and starts it at once. */
+// ------------------------------------------------------------------ the outbox
+
+/** The changes waiting in the outbox, oldest first. */
+function pending() {
+  try {
+    return fs.readdirSync(OUTBOX).filter((f) => f.endsWith('.json')).sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Writes a file whole or not at all, so another process never reads half of it. */
+function writeWhole(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const part = `${file}.${process.pid}.part`;
+  fs.writeFileSync(part, JSON.stringify(data));
+  fs.renameSync(part, file);
+}
+
+let queued = 0;
+/** Keeps a change for when Task Queue answers again. Files are named by time, so they list in the order made. */
+function enqueue(change) {
+  writeWhole(path.join(OUTBOX, `${String(Date.now()).padStart(15, '0')}-${process.pid}-${String(queued++).padStart(4, '0')}.json`), change);
+}
+
+/** The task a ref names, once the outbox has opened it in Task Queue: its id, number, title and start there. */
+const opened = (ref) => (readJson(OPENED) ?? {})[ref] ?? null;
+
+function rememberOpened(ref, made) {
+  try {
+    const now = Date.now();
+    const all = Object.entries(readJson(OPENED) ?? {}).filter(([, t]) => now - Date.parse(t.at) < OPENED_KEEP_MS);
+    writeWhole(OPENED, { ...Object.fromEntries(all), [ref]: { ...made, at: new Date(now).toISOString() } });
+  } catch (err) {
+    log('sync', `could not remember ${made.number}: ${err.message}`);
+  }
+}
+
+const describe = (change) => `${change.op} of ${change.body ? `"${change.body.title}"` : change.id ?? change.ref}`;
+
+function failed(err) {
+  writeJson(SYNC, { failedAt: new Date().toISOString(), status: err.status, error: `${err.code}: ${err.message}` });
+}
+
+/** Takes the outbox for this process. False while another one is sending it. */
+function lockOutbox() {
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      fs.closeSync(fs.openSync(SYNC_LOCK, 'wx'));
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(SYNC_LOCK).mtimeMs < LOCK_STALE_MS) return false;
+        fs.rmSync(SYNC_LOCK, { force: true }); // left by a process that died while sending
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/** Makes one change in Task Queue: opens a task (adds it, then starts it), notes on one, or completes one. A task
+ * opened from the outbox is named by its ref until then. Returns 'sent', or 'gone' when the task was closed or
+ * removed in the app meanwhile. */
+async function send(s, change) {
+  const post = (id, body) => api(s, 'POST', `/my/tasks/${id}`, body);
+  if (change.op === 'open') {
+    if (!change.made) {
+      let doc;
+      try {
+        doc = await api(s, 'POST', '/my/tasks', change.body);
+      } catch (err) {
+        // A Task Queue without project folders refuses the field: file it in the default folder instead.
+        if (!(change.body.folder && err.status === 422 && /folder/i.test(err.message))) throw err;
+        log('start', `this Task Queue has no project folders; "${change.body.folder}" not used`);
+        delete change.body.folder;
+        doc = await api(s, 'POST', '/my/tasks', change.body);
+      }
+      // The id, not link.url: that carries the server's public address, which may differ from the configured one.
+      const id = doc.link.url.split('/').pop();
+      change.made = { id, number: doc.task.task_number, title: doc.task.title, startedAt: doc.task.queue_entered_at };
+    }
+    // Task Queue can't start a task before it got it, so work begun while it couldn't be reached says when.
+    const { id, startedAt } = change.made;
+    const late = Date.parse(startedAt) - Date.parse(change.startedAt) >= 60_000;
+    const comment = `Started ${change.startedAt}, while Task Queue couldn't be reached. It got the task at ${startedAt}.`;
+    await post(id, { started_at: startedAt, ...(late ? { comment } : {}) });
+    return 'sent';
+  }
+  const made = change.ref ? opened(change.ref) : null;
+  const id = change.id ?? made?.id;
+  try {
+    if (!id) throw new ApiError(404, 'NOT_FOUND', 'Its task was never opened in Task Queue.');
+    if (change.op === 'note') {
+      await post(id, { comment: change.text });
+      return 'sent';
+    }
+    // Nor end it before it started: work finished while Task Queue couldn't be reached says when, too.
+    const floor = made?.startedAt ?? change.startedAt;
+    const body = { ended_at: notBefore(change.endedAt, floor) };
+    const note = made && Date.parse(change.endedAt) < Date.parse(made.startedAt)
+      ? `${change.note ?? 'Done.'}\n\nWorked on from ${change.startedAt} to ${change.endedAt}, while Task Queue couldn't be reached.`
+      : change.note;
+    if (note) body.completion_note = clip(note, NOTE_MAX);
+    try {
+      await post(id, body);
+    } catch (err) {
+      if (!(err.status === 422 && /in the future/.test(err.message) && err.serverTime)) throw err;
+      // This machine's clock runs ahead of the server's: end it at the server's time instead.
+      body.ended_at = notBefore(new Date(err.serverTime).toISOString(), floor);
+      await post(id, body);
+    }
+    change.endedAt = body.ended_at;
+    return 'sent';
+  } catch (err) {
+    // Completed, removed or blocked in the app meanwhile: nothing left for the tracker to do.
+    if (!['TASK_CLOSED', 'NOT_FOUND', 'INVALID_TRANSITION'].includes(err.code)) throw err;
+    log(change.op, `${made?.number ?? id ?? change.ref}: ${err.code} ${err.message}`);
+    return 'gone';
+  }
+}
+
+/** Sends what's waiting in the outbox, oldest first, once Task Queue answers. Quiet: only the log says what
+ * happened. Unless `now` is set it skips the try for RETRY_MS after one that failed, so hooks don't keep waiting
+ * on a Task Queue that's down. */
+async function sync(s, { now = false } = {}) {
+  if (!connected(s) || !pending().length) return;
+  const last = readJson(SYNC);
+  if (!now && last && Date.now() - Date.parse(last.failedAt) < RETRY_MS) return;
+  if (!lockOutbox()) return; // another conversation is sending them
+  const until = Date.now() + SYNC_BUDGET_MS;
+  const seen = new Set();
+  let sent = 0;
+  try {
+    // Listed again after each pass: other conversations may add changes meanwhile.
+    passes: for (let names = pending(); (names = names.filter((n) => !seen.has(n))).length; names = pending()) {
+      for (const name of names) {
+        if (Date.now() > until) break passes; // the rest goes on the next try
+        seen.add(name);
+        const file = path.join(OUTBOX, name);
+        const change = readJson(file);
+        try {
+          if (change) {
+            await send(s, change);
+            if (change.op === 'open') rememberOpened(change.ref, change.made);
+            sent++;
+          }
+        } catch (err) {
+          if (unreachable(err) || [401, 403].includes(err.status)) {
+            // Down again, or the key or access needs fixing: kept, and tried again later.
+            if (change.made) writeWhole(file, change); // added but not started: never add it twice
+            if (!last) log('sync', `Task Queue didn't answer (${err.code}); ${pending().length} changes kept`);
+            failed(err);
+            return;
+          }
+          // Refused for good (a removed category, say): waiting won't help.
+          log('sync', `dropped the ${describe(change)}: ${err.code} ${err.message}`);
+        }
+        fs.rmSync(file, { force: true });
+      }
+    }
+    fs.rmSync(SYNC, { force: true });
+  } finally {
+    fs.rmSync(SYNC_LOCK, { force: true });
+    if (sent) log('sync', `Task Queue answered: sent ${sent} kept change${sent === 1 ? '' : 's'}, ${pending().length} still waiting`);
+  }
+}
+
+/** Sends a change now, or keeps it in the outbox when Task Queue can't be reached or older changes are still
+ * waiting there (those go first). Returns 'sent', 'gone' or 'kept'; any other failure is thrown. */
+async function deliver(s, change, { flush = true } = {}) {
+  if (flush) await sync(s);
+  if (!pending().length) {
+    try {
+      return await send(s, change);
+    } catch (err) {
+      if (!unreachable(err)) throw err;
+      log(change.op, `Task Queue didn't answer (${err.code}): the ${describe(change)} is kept until it does`);
+      failed(err);
+    }
+  }
+  enqueue(change);
+  return 'kept';
+}
+
+// ------------------------------------------------------------------ tasks
+
+/** Creates a task in the user's own queue with the agent's estimate and starts it at once. While Task Queue can't
+ * be reached the task is kept in the outbox, without a number until it's sent. */
 async function openTask(s, session, { title, estimate, description, folder }) {
   const state = readState(session);
   if (state.task) await closeTask(s, session, unfinished(state, 'closed when new work started.'), state.lastStop);
@@ -325,59 +548,28 @@ async function openTask(s, session, { title, estimate, description, folder }) {
   if (s.workspace) body.workspace_id = s.workspace;
   if (description) body.description = description;
   if (folder) body.folder = folder;
-  let doc;
-  try {
-    doc = await api(s, 'POST', '/my/tasks', body);
-  } catch (err) {
-    // A Task Queue without project folders refuses the field: file it in the default folder instead.
-    if (!(folder && err.status === 422 && /folder/i.test(err.message))) throw err;
-    log('start', `this Task Queue has no project folders; "${folder}" not used`);
-    delete body.folder;
-    doc = await api(s, 'POST', '/my/tasks', body);
-  }
-  // The id, not link.url: that carries the server's public address, which may differ from the configured one.
-  const id = doc.link.url.split('/').pop();
-  const startedAt = doc.task.queue_entered_at;
-  await api(s, 'POST', `/my/tasks/${id}`, { started_at: startedAt });
-  const task = { id, number: doc.task.task_number, title: doc.task.title, estimate, startedAt };
-  writeState(session, { ...readState(session), task, prompt: null, lastActivity: startedAt });
+  const change = { op: 'open', ref: randomUUID(), body, startedAt: new Date().toISOString() };
+  await deliver(s, change);
+  const made = change.made;
+  const task = { ref: change.ref, id: made?.id ?? null, number: made?.number ?? null, title: made?.title ?? body.title, estimate, startedAt: made?.startedAt ?? change.startedAt };
+  writeState(session, { ...readState(session), task, prompt: null, lastActivity: task.startedAt });
   return task;
 }
 
-/** Adds a note to the open task. False when it was closed or removed in the app meanwhile. */
-async function noteTask(s, task, text) {
-  try {
-    await api(s, 'POST', `/my/tasks/${task.id}`, { comment: clip(text, COMMENT_MAX) });
-    return true;
-  } catch (err) {
-    if (['TASK_CLOSED', 'NOT_FOUND'].includes(err.code)) return false;
-    throw err;
-  }
-}
+/** Adds a note to the open task: 'sent', 'kept' for later, or 'gone' when it was closed or removed in the app. */
+const noteTask = (s, task, text) => deliver(s, { op: 'note', id: task.id ?? null, ref: task.ref ?? null, text: clip(text, COMMENT_MAX) });
 
-/** Completes the conversation's open task at `at` (default now). Returns it with its end time, or null. */
-async function closeTask(s, session, note, at) {
+/** Completes the conversation's open task at `at` (default now). Returns it with its end time and whether it was
+ * only kept for later, or null. */
+async function closeTask(s, session, note, at, { flush = true } = {}) {
   const state = readState(session);
   const task = state.task;
   if (!task) return null;
-  const body = { ended_at: notBefore(at ?? new Date().toISOString(), task.startedAt) };
-  if (note) body.completion_note = clip(note, NOTE_MAX);
-  try {
-    await api(s, 'POST', `/my/tasks/${task.id}`, body);
-  } catch (err) {
-    if (err.status === 422 && /in the future/.test(err.message) && err.serverTime) {
-      // This machine's clock runs ahead of the server's: end it at the server's time instead.
-      body.ended_at = notBefore(new Date(err.serverTime).toISOString(), task.startedAt);
-      await api(s, 'POST', `/my/tasks/${task.id}`, body);
-    } else if (['TASK_CLOSED', 'NOT_FOUND', 'INVALID_TRANSITION'].includes(err.code)) {
-      // Completed, removed or blocked in the app meanwhile: nothing for the tracker to close.
-      log('close', `${task.number}: ${err.code} ${err.message}`);
-    } else {
-      throw err;
-    }
-  }
+  const change = { op: 'close', id: task.id ?? null, ref: task.ref ?? null, startedAt: task.startedAt, endedAt: notBefore(at ?? new Date().toISOString(), task.startedAt) };
+  if (note) change.note = clip(note, NOTE_MAX);
+  const outcome = await deliver(s, change, { flush });
   writeState(session, { ...readState(session), task: null });
-  return { ...task, endedAt: body.ended_at };
+  return { ...task, endedAt: change.endedAt, kept: outcome === 'kept' };
 }
 
 // ------------------------------------------------------------------ hooks
@@ -425,7 +617,7 @@ function guidance(session, task, project) {
     ].join('\n');
   }
   return [
-    `Task Queue: ${task.number} "${task.title}" is in progress (your estimate: ${task.estimate} minutes, started ${when(task.startedAt)}).`,
+    `Task Queue: ${task.number ? `${task.number} ` : ''}"${task.title}" is in progress (your estimate: ${task.estimate} minutes, started ${when(task.startedAt)}).`,
     '- If this prompt continues that work, carry on. When it is finished (done, not when you stop to ask the user something), run as your last step:',
     `  ${done}`,
     '- If it is new, unrelated work, first run the line below. It closes the open task at the time you last finished replying:',
@@ -489,6 +681,7 @@ const HOOKS = {
       return;
     }
     if (!s.enabled) return;
+    await sync(s);
     let state = readState(session);
     // Idle means the agent finished replying and nothing happened since. A prompt, task or note after its last
     // reply means it is still working on a turn (a message sent mid-turn, or a background job reporting back),
@@ -498,7 +691,7 @@ const HOOKS = {
       // Idle too long: that stretch of work ended when the agent last finished replying (or was last prompted).
       try {
         const closed = await closeTask(s, session, unfinished(state, 'closed after the conversation went idle.'), state.lastStop ?? state.lastActivity);
-        log('prompt', `${closed.number} completed (idle)`);
+        log('prompt', `${named(closed)} completed (idle)`);
       } catch (err) {
         log('prompt', `idle close failed: ${err.code} ${err.message}`);
       }
@@ -512,11 +705,12 @@ const HOOKS = {
   /** The agent finished a reply: note a follow-up prompt on the task it continued, and remember when it finished. */
   async stop(input, s) {
     const session = input.session_id || 'default';
+    await sync(s);
     const state = readState(session);
     if (!state.task && !state.prompt) return;
     if (state.task && state.prompt && s.promptText && connected(s)) {
       try {
-        if (!(await noteTask(s, state.task, `Prompt: ${state.prompt.text}`))) state.task = null; // closed in the app
+        if ((await noteTask(s, state.task, `Prompt: ${state.prompt.text}`)) === 'gone') state.task = null; // closed in the app
       } catch (err) {
         log('stop', `note failed: ${err.code} ${err.message}`);
       }
@@ -527,10 +721,12 @@ const HOOKS = {
     writeState(session, { ...state, prompt: null, lastStop: now, lastActivity: now, lastReply: reply ? clip(reply, NOTE_MAX) : state.lastReply });
   },
 
-  /** Keep the stable copy current, check in, close conversations that never ended, and ask for setup until it's done. */
+  /** Keep the stable copy current, check in, send what was kept while Task Queue couldn't be reached, close
+   * conversations that never ended, and ask for setup until it's done. */
   async 'session-start'(input, s, host) {
     syncStableCopy();
     await checkInOnce(input.session_id || 'default', s, host);
+    await sync(s);
     if (connected(s) && fs.existsSync(SESSIONS)) {
       for (const name of fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json'))) {
         const session = name.slice(0, -'.json'.length);
@@ -539,11 +735,11 @@ const HOOKS = {
         try {
           if (state.task) {
             await closeTask(s, session, unfinished(state, 'the conversation never ended properly.'), state.lastStop ?? state.lastActivity);
-            log('session-start', `${state.task.number} closed (abandoned conversation)`);
+            log('session-start', `${named(state.task)} closed (abandoned conversation)`);
           }
           fs.rmSync(path.join(SESSIONS, name), { force: true });
         } catch (err) {
-          log('session-start', `closing ${state.task?.number} failed: ${err.code} ${err.message}`);
+          log('session-start', `closing ${state.task && named(state.task)} failed: ${err.code} ${err.message}`);
         }
       }
     }
@@ -553,13 +749,14 @@ const HOOKS = {
     }
   },
 
-  /** The conversation is over (exit, /clear, …): close anything left open, at the time the agent last finished. */
+  /** The conversation is over (exit, /clear, …): close anything left open, at the time the agent last finished.
+   * Codex gives this hook 3 seconds, so it doesn't send the outbox; the next hook to run does. */
   async 'session-end'(input, s) {
     const session = input.session_id || 'default';
     const state = readState(session);
     if (state.task && connected(s)) {
-      const closed = await closeTask(s, session, unfinished(state, 'closed when the conversation ended.'), state.lastStop);
-      log('session-end', `${closed.number} completed (conversation ended)`);
+      const closed = await closeTask(s, session, unfinished(state, 'closed when the conversation ended.'), state.lastStop, { flush: false });
+      log('session-end', `${named(closed)} completed (conversation ended)`);
     }
     fs.rmSync(stateFile(session), { force: true });
   },
@@ -586,6 +783,14 @@ const out = (...lines) => console.log(lines.join('\n'));
 
 const RELOAD_HINT =
   'Tracking starts with your next prompt. In Claude Code, if the plugin was installed during this conversation, type /reload-plugins first so its hooks load now instead of in your next session.';
+
+/** Why a change was kept in the outbox, for the agent. Task Queue being unreachable needs nothing from anyone: the
+ * tracker sends it on its own later. A key or access Task Queue refused needs the user. */
+function keptBecause() {
+  const last = readJson(SYNC);
+  if ([401, 403].includes(last?.status)) return `: Task Queue refused what was already waiting (${last.error}). It's all sent once that's fixed; tell the user once.`;
+  return ": Task Queue can't be reached right now, and it's sent automatically once it can. Nothing to tell the user; carry on.";
+}
 
 class Stop extends Error {}
 
@@ -720,17 +925,27 @@ const COMMANDS = {
     const s = loadSettings();
     const extra = [];
     if (connected(s)) {
+      let answered = false;
       try {
         const me = await api(s, 'GET', '/my/tasks');
         extra.push(`Connection: OK, signed in as ${me.user}`);
+        answered = true;
       } catch (err) {
         extra.push(`Connection: FAILED (${err.code}: ${err.message})`);
       }
+      if (answered) await sync(s, { now: true });
     }
     const open = (fs.existsSync(SESSIONS) ? fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json')) : [])
-      .map((name) => readJson(path.join(SESSIONS, name))?.task)
+      .map((name) => readState(name.slice(0, -'.json'.length)).task)
       .filter(Boolean);
-    extra.push(`Open tasks: ${open.length}`, ...open.map((t) => `  ${t.number}: ${t.title} (estimate ${t.estimate} min, started ${when(t.startedAt)})`));
+    extra.push(`Open tasks: ${open.length}`, ...open.map((t) => `  ${t.number ?? 'not sent yet'}: ${t.title} (estimate ${t.estimate} min, started ${when(t.startedAt)})`));
+    const waiting = pending().length;
+    const last = readJson(SYNC);
+    extra.push(
+      waiting
+        ? `Waiting to send: ${waiting} change${waiting === 1 ? '' : 's'} kept while Task Queue couldn't be reached${last ? ` (last try: ${last.error})` : ''}. They're sent when it answers.`
+        : 'Waiting to send: nothing',
+    );
     if (fs.existsSync(LOG)) extra.push('Recent log:', ...fs.readFileSync(LOG, 'utf8').trim().split('\n').slice(-5).map((l) => `  ${l}`));
     summary(s, extra);
   },
@@ -754,22 +969,25 @@ const COMMANDS = {
     if (!title) fail('Usage: start --estimate <minutes> --description "<what the work is>" "<short title>"');
     const estimate = estimateOf(flags, s);
     const session = typeof flags.session === 'string' ? flags.session : MANUAL;
-    const pending = readState(session).prompt;
+    const asked = readState(session).prompt;
     // The agent's summary of the work, then (unless prompt text is off) the user's request it came from.
     const summary = typeof flags.description === 'string' ? clip(flags.description.trim(), SUMMARY_MAX) : '';
-    const request = pending && s.promptText ? clip(pending.text, PROMPT_MAX) : '';
+    const request = asked && s.promptText ? clip(asked.text, PROMPT_MAX) : '';
     let description = '';
     if (summary || request) {
-      const project = request && pending.cwd ? path.basename(pending.cwd) : '';
+      const project = request && asked.cwd ? path.basename(asked.cwd) : '';
       const footer = [project && `Project: ${project}`, `Session: ${session}`, 'Logged by the Task Queue tracker for AI coding agents.'].filter(Boolean).join('\n');
       const body = [summary, request && (summary ? `Request:\n${request}` : request)].filter(Boolean).join('\n\n');
       description = `${body}\n\n---\n${footer}`;
     }
-    const folder = typeof flags.folder === 'string' ? clip(flags.folder.trim(), FOLDER_MAX) : s.folders ? projectOf(pending?.cwd) : '';
+    const folder = typeof flags.folder === 'string' ? clip(flags.folder.trim(), FOLDER_MAX) : s.folders ? projectOf(asked?.cwd) : '';
+    await sync(s, { now: true });
     const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined, folder: folder || undefined }).catch((err) =>
       fail(`Could not open the task: ${err.code}: ${err.message}`),
     );
-    out(`Started ${task.number}: ${task.title} (estimate ${task.estimate} minutes${estimate.given ? '' : ', the default: no --estimate given'}).`);
+    const est = `estimate ${task.estimate} minutes${estimate.given ? '' : ', the default: no --estimate given'}`;
+    if (!task.number) return out(`Saved "${task.title}" (${est}) on this machine${keptBecause()}`);
+    out(`Started ${task.number}: ${task.title} (${est}).`);
   },
 
   async note({ rest, flags }) {
@@ -778,24 +996,28 @@ const COMMANDS = {
     const text = rest.join(' ').trim();
     if (!text) fail('Usage: note "<text>"');
     const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    await sync(s, { now: true });
     const state = readState(session);
     if (!state.task) fail('No task is open: start one first.');
     const noted = await noteTask(s, state.task, text).catch((err) => fail(`Could not add the note: ${err.code}: ${err.message}`));
-    if (!noted) {
+    if (noted === 'gone') {
       writeState(session, { ...state, task: null });
-      fail(`${state.task.number} was closed or removed in Task Queue: start a new task.`);
+      fail(`${named(state.task)} was closed or removed in Task Queue: start a new task.`);
     }
     writeState(session, { ...state, lastActivity: new Date().toISOString() });
-    out(`Noted on ${state.task.number}.`);
+    out(noted === 'kept' ? `Saved the note on this machine${keptBecause()}` : `Noted on ${state.task.number}.`);
   },
 
   async done({ rest, flags }) {
     const s = loadSettings();
     if (!connected(s)) fail('Not set up: run setup first.');
     const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    await sync(s, { now: true });
     const closed = await closeTask(s, session, rest.join(' ').trim() || 'Done.').catch((err) => fail(`Could not complete the task: ${err.code}: ${err.message}`));
     if (!closed) return out('No task is open.');
-    out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated).`);
+    const took = `took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated`;
+    if (closed.kept) return out(`Saved the completion of "${closed.title}" (ended ${when(closed.endedAt)}, ${took}) on this machine${keptBecause()}`);
+    out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (${took}).`);
   },
 
   async hook({ rest, flags }) {
