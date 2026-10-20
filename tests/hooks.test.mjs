@@ -296,6 +296,14 @@ try {
   run(h, at('ok'), 'status');
   assert.deepEqual(sentSince(since).map((q) => q.url), ['/ok/api/v1/my/tasks/t9']);
   ok('added but not started when it went down: only started later, never added twice');
+  h = fresh('half-kept');
+  run(h, DOWN, 'start', '--estimate', '5', 'Half kept');
+  run(h, at('half'), 'status');
+  assert.equal(JSON.parse(fs.readFileSync(kept(h, 0), 'utf8')).made.number, 'TASK-9');
+  since = requests().length;
+  run(h, at('ok'), 'status');
+  assert.deepEqual(sentSince(since).map((q) => q.url), ['/ok/api/v1/my/tasks/t9']);
+  ok('a kept task added on a later try is written down at once, and never added twice');
 
   h = fresh('offline-503');
   assert.match(run(h, at('down'), 'start', '--estimate', '5', 'Proxy down').stdout, /^Saved "Proxy down"/); ok('a 503 from a proxy counts as unreachable');

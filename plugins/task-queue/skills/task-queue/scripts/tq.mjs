@@ -61,8 +61,10 @@ const CHECK_IN_TIMEOUT_MS = 2500;
 const UNSUPPORTED_RETRY_MS = 24 * 60 * 60 * 1000;
 // After Task Queue didn't answer, hooks wait this long before checking again, so they stay quick while it's down.
 const RETRY_MS = 30 * 1000;
-// One pass over the outbox stops after this long; the rest goes on the next one.
+// A pass over the outbox starts no change after this long; the rest goes on the next one. Hooks get less: one
+// change can take three calls, and all of it has to fit in the 20 seconds the agents give a hook.
 const SYNC_BUDGET_MS = 10 * 1000;
+const HOOK_SYNC_BUDGET_MS = 2 * 1000;
 // A lock older than this was left by a process that died while sending.
 const LOCK_STALE_MS = 60 * 1000;
 // Opened tasks are remembered this long, past any conversation that could still name them by their ref.
@@ -415,8 +417,8 @@ function lockOutbox() {
 
 /** Makes one change in Task Queue: opens a task (adds it, then starts it), notes on one, or completes one. A task
  * opened from the outbox is named by its ref until then. Returns 'sent', or 'gone' when the task was closed or
- * removed in the app meanwhile. */
-async function send(s, change) {
+ * removed in the app meanwhile. `added` is told as soon as Task Queue has added a task, before it's started. */
+async function send(s, change, added = () => {}) {
   const post = (id, body) => api(s, 'POST', `/my/tasks/${id}`, body);
   if (change.op === 'open') {
     if (!change.made) {
@@ -433,6 +435,7 @@ async function send(s, change) {
       // The id, not link.url: that carries the server's public address, which may differ from the configured one.
       const id = doc.link.url.split('/').pop();
       change.made = { id, number: doc.task.task_number, title: doc.task.title, startedAt: doc.task.queue_entered_at };
+      added(change);
     }
     // Task Queue can't start a task before it got it, so work begun while it couldn't be reached says when.
     const { id, startedAt } = change.made;
@@ -475,14 +478,14 @@ async function send(s, change) {
 }
 
 /** Sends what's waiting in the outbox, oldest first, once Task Queue answers. Quiet: only the log says what
- * happened. Unless `now` is set it skips the try for RETRY_MS after one that failed, so hooks don't keep waiting
- * on a Task Queue that's down. */
+ * happened. Hooks skip the try for RETRY_MS after one that failed, so they don't keep waiting on a Task Queue
+ * that's down. Commands set `now`: they try at once, and may take longer. */
 async function sync(s, { now = false } = {}) {
   if (!connected(s) || !pending().length) return;
   const last = readJson(SYNC);
   if (!now && last && Date.now() - Date.parse(last.failedAt) < RETRY_MS) return;
   if (!lockOutbox()) return; // another conversation is sending them
-  const until = Date.now() + SYNC_BUDGET_MS;
+  const until = Date.now() + (now ? SYNC_BUDGET_MS : HOOK_SYNC_BUDGET_MS);
   const seen = new Set();
   let sent = 0;
   try {
@@ -495,14 +498,14 @@ async function sync(s, { now = false } = {}) {
         const change = readJson(file);
         try {
           if (change) {
-            await send(s, change);
+            // Added but not yet started is written down at once, so even a killed hook never adds it twice.
+            await send(s, change, () => writeWhole(file, change));
             if (change.op === 'open') rememberOpened(change.ref, change.made);
             sent++;
           }
         } catch (err) {
           if (unreachable(err) || [401, 403].includes(err.status)) {
             // Down again, or the key or access needs fixing: kept, and tried again later.
-            if (change.made) writeWhole(file, change); // added but not started: never add it twice
             if (!last) log('sync', `Task Queue didn't answer (${err.code}); ${pending().length} changes kept`);
             failed(err);
             return;
