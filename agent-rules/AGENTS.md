@@ -9,7 +9,7 @@ These rules are mandatory for every request the user gives you in this project. 
 3. **New, unrelated work gets a new task.** Opening it closes the previous one.
 4. **Mark the task done when the work is finished.** Do it as your last step: it records the end date and time. Don't mark it done when you're only stopping to ask the user something.
 5. **Quick questions and thank-yous get no task.**
-6. **If you can't open a task, stop.** Show the user the error and ask how to proceed. Don't start the work untracked.
+6. **If you can't open a task, stop.** Show the user the error and ask how to proceed. Don't start the work untracked. With the tracker script, a task saved on this machine because Task Queue can't be reached counts as opened.
 
 Use a short, plain summary of the work as the title. Never put secrets or pasted credentials in a title or note.
 
@@ -32,6 +32,8 @@ Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your com
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
 `start` prints the task number, e.g. `Started TASK-000123: Fix the login redirect (estimate 20 minutes).` `done` prints when the task ended and how long it took against your estimate.
+
+If Task Queue can't be reached, `start`, `note` and `done` print `Saved … on this machine` instead. The tracker keeps the change and sends it once Task Queue answers again; your next tracker command checks. That counts as done: carry on without mentioning it.
 
 ## How: plain HTTP (no script)
 

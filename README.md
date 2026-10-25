@@ -99,13 +99,21 @@ The agent might not mark a task done. The tracker closes it anyway, at the time 
 - the conversation ends (exit or `/clear`);
 - the terminal was closed and the conversation never ended. The next session you start cleans these up after 12 hours.
 
-Tracking never blocks you. If Task Queue is down or the key stops working, the agent tells you once and carries on. The details go to `~/.task-queue/tracker.log`.
+Tracking never blocks you, and a lost connection loses nothing. Task Queue might be down, the network might drop, or its proxy might answer 502, 503 or 504. The tracker then keeps the agent's tasks, notes and completions on your machine, in `~/.task-queue/outbox`, and the agent carries on without mentioning it. Each prompt, reply and new session quietly checks whether Task Queue answers again, at most every 30 seconds. Once it does, everything kept is sent in the order it happened. `status` checks at once.
+
+What Task Queue records depends on when the task was opened:
+
+- **Opened before the connection dropped:** notes and the completion arrive later, with their real times.
+- **Opened while Task Queue couldn't be reached:** Task Queue can't start a task before it receives it, so the task starts when it arrives. Its real start and end times are written in its notes.
+
+If the key stops working, the agent tells you once and carries on. Changes kept by then wait until the key is fixed. A kept change that Task Queue refuses for good, such as one for a category that was removed, is dropped. The details go to `~/.task-queue/tracker.log`.
 
 ## Privacy
 
 - **Your project's name goes to Task Queue** as the folder each task is filed in: the name of the git repository the agent works in, or else of its working folder (never your home folder). Working in `D:\Stars PH`, tasks go to the folder Stars PH, made the first time it's needed. The agent can pass `--folder "<name>"` to file a task elsewhere. Run `set folders off` to keep project names out; tasks then go to the default folder.
 - **Your request and your follow-up prompts go to Task Queue, where admins can read them,** along with the agent's titles and summaries. Don't paste secrets into requests while tracking is on. Run `set prompt-text off` to keep your prompts out; titles and summaries are still sent.
 - **The tracker checks in with Task Queue** at the start of each session, and when you turn tracking off or on. A check-in says which agent it runs in, the plugin version, whether tracking is on and the workspace it logs to; never prompts or project names. Admins see on the audit log when tracking is connected, paused or resumed, and when a tracker stops checking in for several days (removed, blocked, or simply not used).
+- **What Task Queue couldn't receive waits on your machine,** in `~/.task-queue/outbox`, until it's sent. It's the same text that would have been sent.
 - **Your settings and key stay on your machine,** in `~/.task-queue/config.json`. Set `TASK_QUEUE_HOME` to keep that folder somewhere else. The key is never printed: `status` shows only its first characters.
 
 ## Commands
@@ -115,7 +123,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | Command | What it does |
 |---------|--------------|
 | `setup --url <url> --key <key> [--workspace <id>] [--category <VALUE>]` | Connects and checks the key |
-| `status` | Shows your settings, whether Task Queue answers, open tasks and recent log lines |
+| `status` | Shows your settings, whether Task Queue answers, open tasks, changes waiting to be sent and recent log lines. It sends waiting changes if Task Queue answers. |
 | `enable` / `disable` | Turns tracking on or off; your settings are kept |
 | `workspaces` | Lists the workspaces you can add tasks to, with their categories |
 | `set workspace <id>` / `set category <VALUE>` | Sets where tasks go |

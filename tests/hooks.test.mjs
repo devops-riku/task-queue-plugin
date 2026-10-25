@@ -80,6 +80,13 @@ const fake = spawn(process.execPath, ['-e', `
       fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null }) + '\\n');
       r.setHeader('content-type', 'application/json');
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
+      if (q.url.startsWith('/down')) { r.statusCode = 503; r.setHeader('content-type', 'text/html'); return r.end('<h1>503 Service Unavailable</h1>'); } // a proxy, its server down
+      if (q.url.startsWith('/half/api/v1/my/tasks/')) { r.statusCode = 503; return r.end(); } // went down right after adding a task
+      if (q.url.startsWith('/revoked')) { r.statusCode = 401; return r.end(JSON.stringify({ code: 'INVALID_API_KEY', message: 'This API key was revoked.' })); }
+      if (q.url.startsWith('/reject') && q.method === 'POST' && q.url.endsWith('/my/tasks')) {
+        r.statusCode = 422;
+        return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'category: FEATURE is not a category here' }));
+      }
       if (q.method === 'POST' && q.url.endsWith('/my/tasks')) {
         // /nofolder is an older Task Queue: it refuses the folder field.
         if (q.url.startsWith('/nofolder') && JSON.parse(b).folder) {
@@ -221,6 +228,109 @@ try {
   hook(h, 'prompt', { session_id: 'idle', prompt: 'back again' }, { env: at('ok') });
   assert.equal(JSON.parse(fs.readFileSync(statePath(h, 'idle'), 'utf8')).task, null);
   assert.ok(requests().some((r) => r.url === '/ok/api/v1/my/tasks/t1' && r.body.ended_at)); ok('real idle: task closed');
+
+  // Offline: what Task Queue can't get is kept in the outbox, and sent in order once it answers again.
+  const DOWN = READY; // port 9: nothing answers
+  const outbox = (home) => (fs.existsSync(path.join(home, 'outbox')) ? fs.readdirSync(path.join(home, 'outbox')).filter((f) => f.endsWith('.json')).sort() : []);
+  const kept = (home, i) => path.join(home, 'outbox', outbox(home)[i]);
+  const run = (home, env, ...args) => spawnSync(process.execPath, [TQ, ...args], { env: { ...process.env, TASK_QUEUE_HOME: home, ...env }, encoding: 'utf8' });
+  const sentSince = (mark) => requests().slice(mark).filter((q) => q.body && !q.url.endsWith('/my/tracker'));
+  const lastTry = (home, minutesAgo) => fs.writeFileSync(path.join(home, 'sync.json'), JSON.stringify({ failedAt: ago(minutesAgo), error: 'UNREACHABLE: x' }));
+
+  h = fresh('away');
+  assert.match(hook(h, 'prompt', { session_id: 'o', prompt: 'fix the cart', cwd: client }, { env: DOWN }), /^Task Queue tracking is on/);
+  let r = run(h, DOWN, 'start', '--session', 'o', '--estimate', '15', '--description', 'The cart total skips the discount.', 'Fix the cart');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Saved "Fix the cart" \(estimate 15 minutes\) on this machine: Task Queue can't be reached/); ok('offline start: saved, not failed');
+  const keptTask = JSON.parse(fs.readFileSync(statePath(h, 'o'), 'utf8')).task;
+  assert.equal(outbox(h).length, 1); assert.equal(keptTask.number, null); assert.ok(keptTask.ref); ok('offline start: kept in the outbox, no number yet');
+  hook(h, 'stop', { session_id: 'o', last_assistant_message: 'On it.' }, { env: DOWN });
+  let said = hook(h, 'prompt', { session_id: 'o', prompt: 'also the totals', cwd: client }, { env: DOWN });
+  assert.match(said, /^Task Queue: "Fix the cart" is in progress/); assert.doesNotMatch(said, /reach|offline|outbox|kept/i);
+  ok('offline: guidance names the kept task and says nothing about the connection');
+  hook(h, 'stop', { session_id: 'o', last_assistant_message: 'Totals fixed.' }, { env: DOWN });
+  r = run(h, DOWN, 'done', '--session', 'o', 'Fixed the cart total.');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Saved the completion of "Fix the cart"/);
+  assert.equal(outbox(h).length, 3); ok('offline: the follow-up note and the completion are kept too');
+  // Started 30 minutes ago, and Task Queue last tried a minute ago: the next hook checks again.
+  fs.writeFileSync(kept(h, 0), JSON.stringify({ ...JSON.parse(fs.readFileSync(kept(h, 0), 'utf8')), startedAt: ago(30) }));
+  lastTry(h, 1);
+  let since = requests().length;
+  said = hook(h, 'prompt', { session_id: 'o', prompt: 'thanks', cwd: client }, { env: at('ok') });
+  const replay = sentSince(since);
+  assert.deepEqual(replay.map((q) => q.url), ['/ok/api/v1/my/tasks', ...Array(3).fill('/ok/api/v1/my/tasks/t9')]);
+  assert.equal(replay[0].body.title, 'Fix the cart'); assert.equal(replay[0].body.folder, 'Stars PH');
+  assert.ok(replay[1].body.started_at); assert.match(replay[1].body.comment, /^Started .*, while Task Queue couldn't be reached/);
+  assert.equal(replay[2].body.comment, 'Prompt: also the totals');
+  assert.ok(replay[3].body.ended_at >= replay[1].body.started_at, 'never ends before it starts');
+  assert.match(replay[3].body.completion_note, /^Fixed the cart total\.\n\nWorked on from .* while Task Queue couldn't be reached\.$/);
+  ok('back online: the next hook sends them in order, real times in the notes');
+  assert.equal(outbox(h).length, 0); assert.match(said, /^Task Queue tracking is on/); assert.doesNotMatch(said, /reach|offline|outbox|kept/i);
+  assert.ok(!fs.existsSync(path.join(h, 'sync.json'))); ok('back online: quietly, nothing left waiting');
+
+  h = fresh('offline-done');
+  hook(h, 'prompt', { session_id: 'b', prompt: 'build it' }, { env: at('ok') });
+  assert.match(run(h, at('ok'), 'start', '--session', 'b', '--estimate', '10', 'Build it').stdout, /^Started TASK-9/);
+  r = run(h, DOWN, 'done', '--session', 'b', 'Built.');
+  assert.match(r.stdout, /^Saved the completion of "Build it"/);
+  const endedAt = JSON.parse(fs.readFileSync(kept(h, 0), 'utf8')).endedAt;
+  fs.writeFileSync(path.join(h, 'sync.lock'), ''); // another conversation is sending
+  run(h, at('ok'), 'status');
+  assert.equal(outbox(h).length, 1); ok('a conversation that is sending is left to it');
+  const old = new Date(Date.now() - 120_000);
+  fs.utimesSync(path.join(h, 'sync.lock'), old, old); // its process died
+  since = requests().length;
+  assert.match(run(h, at('ok'), 'status').stdout, /Waiting to send: nothing/);
+  assert.deepEqual(sentSince(since).map((q) => q.body), [{ ended_at: endedAt, completion_note: 'Built.' }]);
+  ok('opened online, finished offline: sent later with its real end time, by status');
+
+  h = fresh('reconnect');
+  run(h, DOWN, 'start', '--session', 'n', '--estimate', '20', 'Later');
+  lastTry(h, 1);
+  assert.match(hook(h, 'prompt', { session_id: 'n', prompt: 'go on' }, { env: at('ok') }), /^Task Queue: TASK-9 "Later" is in progress/);
+  assert.equal(JSON.parse(fs.readFileSync(statePath(h, 'n'), 'utf8')).task.number, 'TASK-9'); ok('still open when Task Queue answers: the task gets its number');
+
+  h = fresh('half');
+  assert.match(run(h, at('half'), 'start', '--estimate', '5', 'Half').stdout, /^Started TASK-9/);
+  since = requests().length;
+  run(h, at('ok'), 'status');
+  assert.deepEqual(sentSince(since).map((q) => q.url), ['/ok/api/v1/my/tasks/t9']);
+  ok('added but not started when it went down: only started later, never added twice');
+  h = fresh('half-kept');
+  run(h, DOWN, 'start', '--estimate', '5', 'Half kept');
+  run(h, at('half'), 'status');
+  assert.equal(JSON.parse(fs.readFileSync(kept(h, 0), 'utf8')).made.number, 'TASK-9');
+  since = requests().length;
+  run(h, at('ok'), 'status');
+  assert.deepEqual(sentSince(since).map((q) => q.url), ['/ok/api/v1/my/tasks/t9']);
+  ok('a kept task added on a later try is written down at once, and never added twice');
+
+  h = fresh('offline-503');
+  assert.match(run(h, at('down'), 'start', '--estimate', '5', 'Proxy down').stdout, /^Saved "Proxy down"/); ok('a 503 from a proxy counts as unreachable');
+  assert.match(run(h, at('reject'), 'status').stdout, /Waiting to send: nothing/);
+  assert.match(fs.readFileSync(path.join(h, 'tracker.log'), 'utf8'), /dropped the open of "Proxy down": VALIDATION_ERROR/);
+  ok('a change Task Queue refuses for good is dropped and logged, not retried');
+  r = run(h, at('reject'), 'start', '--estimate', '5', 'Bad category');
+  assert.equal(r.status, 1); assert.match(r.stderr, /Could not open the task: VALIDATION_ERROR/); assert.equal(outbox(h).length, 0);
+  ok('refused while online: the command fails as before, nothing kept');
+
+  h = fresh('revoked');
+  run(h, DOWN, 'start', '--session', 'k', '--estimate', '5', 'Keyed');
+  r = run(h, at('revoked'), 'done', '--session', 'k', 'Done.');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /refused what was already waiting \(INVALID_API_KEY: .*tell the user once\.$/m);
+  assert.equal(outbox(h).length, 2); ok('key revoked with changes waiting: kept, and the agent is told why');
+  since = requests().length;
+  assert.match(run(h, at('ok'), 'status').stdout, /Waiting to send: nothing/);
+  assert.equal(sentSince(since).length, 3); ok('key fixed: everything kept is sent');
+
+  h = fresh('offline-slow');
+  run(h, DOWN, 'start', '--session', 'w', '--estimate', '5', 'Slow');
+  lastTry(h, 1);
+  hook(h, 'stop', { session_id: 'w' }, { env: at('slow') }); // tries once, and Task Queue hangs
+  t = Date.now();
+  hook(h, 'stop', { session_id: 'w' }, { env: at('slow') });
+  assert.ok(Date.now() - t < 2000, `second hook waited ${Date.now() - t} ms`); assert.equal(outbox(h).length, 1);
+  ok('hanging Task Queue: one try, then hooks skip it for a while');
 } finally {
   fake.kill();
 }
