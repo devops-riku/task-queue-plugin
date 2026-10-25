@@ -88,6 +88,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | When | What happens in Task Queue |
 |------|----------------------------|
 | You ask for new work | The agent runs `start` with a title, a one- or two-sentence description of the work and its estimate. A task is created in your queue and started, in a folder named after your project. Its description is the agent's, followed by your request (unless prompt text is off). |
+| You say the work is part of an existing task | The agent adds `--parent <task number>` to `start`, and the new task is filed as a subtask of that task. Adding subtasks needs *Edit tasks* in that workspace, as in the app. When the task can't go there (no *Edit tasks*, that task is a subtask itself or closed, or an older Task Queue), it's filed on its own and `start` says why. |
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
@@ -131,7 +132,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
 | `set folders on\|off` | Sets whether tasks are filed in a folder named after the project (default on) |
-| `start --estimate <minutes> --description "<text>" [--folder "<name>"] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. |
+| `start --estimate <minutes> --description "<text>" [--folder "<name>"] [--parent <task number>] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. `--parent` files the new task as a subtask of an existing task. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 

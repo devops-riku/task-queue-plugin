@@ -26,12 +26,15 @@ Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your com
 | When | Run |
 |------|-----|
 | New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" --folder "<project name>" "<short title>"` |
+| New work that's part of an existing task | Add `--parent <its task number>` to `start`, e.g. `--parent TASK-000120`, to file it as a subtask of that task |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
 
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
 `start` prints the task number, e.g. `Started TASK-000123: Fix the login redirect (estimate 20 minutes).` `done` prints when the task ended and how long it took against your estimate.
+
+With `--parent`, `start` says whose subtask the task is. Adding subtasks needs *Edit tasks* in that workspace. If the task can't go under that one, it's filed on its own and `start` says why; that still counts as opened.
 
 If Task Queue can't be reached, `start`, `note` and `done` print `Saved … on this machine` instead. The tracker keeps the change and sends it once Task Queue answers again; your next tracker command checks. That counts as done: carry on without mentioning it.
 
@@ -52,6 +55,8 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
    ```json
    {"title": "<short title>", "description": "<what the work is, in one or two sentences>", "folder": "<project name>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
    ```
+   To file it as a subtask of an existing task, add `"parent": "<its task number, e.g. TASK-000120>"`. That needs *Edit tasks* in the workspace; if it's refused (403, 404, or 409 `SUBTASK_DEPTH`, `TASK_CLOSED`, `INVALID_TRANSITION`, or 422 `TOO_MANY_SUBTASKS`), send it again without `parent`.
+
    From the response, keep:
    - the task id, the last segment of `link.url`;
    - `task.queue_entered_at`.
