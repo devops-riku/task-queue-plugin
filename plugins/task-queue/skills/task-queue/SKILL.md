@@ -52,6 +52,10 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 | `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
+## Subtasks
+
+When the user says the work is part of an existing Task Queue task (e.g. TASK-000120), add `--parent TASK-000120` to `start`. The new task is filed as a subtask of that task, and `start` says so. Adding subtasks needs *Edit tasks* in that workspace, as in the app. If the task can't go there (no *Edit tasks*, that task is a subtask itself, closed or cancelled, or the Task Queue is older), it's filed on its own and `start` says why. That isn't a failure: carry on.
+
 ## When Task Queue can't be reached
 
 `start`, `note` and `done` don't fail when Task Queue is down or the network drops. They print `Saved … on this machine` instead. The tracker keeps the change in `~/.task-queue/outbox` and sends it, with everything else kept, once Task Queue answers again. The hooks check quietly on every prompt and reply. That isn't a failure: don't mention it to the user, don't retry, carry on. `status` shows what's waiting and sends it if Task Queue answers.

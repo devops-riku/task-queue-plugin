@@ -12,8 +12,9 @@
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
- *   start [--session <id>] --estimate <minutes> [--description "<text>"] [--folder "<name>"] "<title>"
- *                                                            Open and start a task.
+ *   start [--session <id>] --estimate <minutes> [--description "<text>"] [--folder "<name>"] [--parent <task number>] "<title>"
+ *                                                            Open and start a task (with --parent, as a subtask
+ *                                                            of that task).
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
@@ -53,7 +54,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -80,6 +81,7 @@ const DEFAULT_IDLE = 60;
 const ABANDONED_MS = 12 * 60 * 60 * 1000;
 const TITLE_MAX = 200;
 const FOLDER_MAX = 60;
+const PARENT_MAX = 64;
 // A task's description takes 20,000 characters: the agent's own summary, the user's request, then the footer.
 const SUMMARY_MAX = 2000;
 const PROMPT_MAX = 16000;
@@ -415,6 +417,36 @@ function lockOutbox() {
   return false;
 }
 
+/** Whether Task Queue refused a new task because of its parent: that task can't take subtasks (it's a subtask, closed,
+ * cancelled or full), it isn't there, the account may not add subtasks, or (an older Task Queue) the field is unknown. */
+function parentRefused(err) {
+  if (['SUBTASK_DEPTH', 'TOO_MANY_SUBTASKS', 'TASK_CLOSED', 'INVALID_TRANSITION'].includes(err.code)) return true;
+  if (err.status === 403 || err.status === 404) return true;
+  return err.status === 422 && /parent/i.test(err.message);
+}
+
+/** Adds the task of an 'open' change. What Task Queue refuses that the task can do without is dropped and the add
+ * tried again: a folder an older Task Queue doesn't know, or a parent that can't take it (the task is then filed on
+ * its own, and `change.parentRefused` says why). */
+async function addTask(s, change) {
+  for (;;) {
+    try {
+      return await api(s, 'POST', '/my/tasks', change.body);
+    } catch (err) {
+      if (change.body.folder && err.status === 422 && /folder/i.test(err.message)) {
+        log('start', `this Task Queue has no project folders; "${change.body.folder}" not used`);
+        delete change.body.folder;
+      } else if (change.body.parent && parentRefused(err)) {
+        log('start', `not filed under ${change.body.parent}: ${err.code} ${err.message}`);
+        change.parentRefused = err.message;
+        delete change.body.parent;
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 /** Makes one change in Task Queue: opens a task (adds it, then starts it), notes on one, or completes one. A task
  * opened from the outbox is named by its ref until then. Returns 'sent', or 'gone' when the task was closed or
  * removed in the app meanwhile. `added` is told as soon as Task Queue has added a task, before it's started. */
@@ -422,19 +454,16 @@ async function send(s, change, added = () => {}) {
   const post = (id, body) => api(s, 'POST', `/my/tasks/${id}`, body);
   if (change.op === 'open') {
     if (!change.made) {
-      let doc;
-      try {
-        doc = await api(s, 'POST', '/my/tasks', change.body);
-      } catch (err) {
-        // A Task Queue without project folders refuses the field: file it in the default folder instead.
-        if (!(change.body.folder && err.status === 422 && /folder/i.test(err.message))) throw err;
-        log('start', `this Task Queue has no project folders; "${change.body.folder}" not used`);
-        delete change.body.folder;
-        doc = await api(s, 'POST', '/my/tasks', change.body);
-      }
+      const doc = await addTask(s, change);
       // The id, not link.url: that carries the server's public address, which may differ from the configured one.
       const id = doc.link.url.split('/').pop();
-      change.made = { id, number: doc.task.task_number, title: doc.task.title, startedAt: doc.task.queue_entered_at };
+      change.made = {
+        id,
+        number: doc.task.task_number,
+        title: doc.task.title,
+        startedAt: doc.task.queue_entered_at,
+        parent: doc.task.parent?.task_number ?? null,
+      };
       added(change);
     }
     // Task Queue can't start a task before it got it, so work begun while it couldn't be reached says when.
@@ -544,19 +573,21 @@ async function deliver(s, change, { flush = true } = {}) {
 
 /** Creates a task in the user's own queue with the agent's estimate and starts it at once. While Task Queue can't
  * be reached the task is kept in the outbox, without a number until it's sent. */
-async function openTask(s, session, { title, estimate, description, folder }) {
+async function openTask(s, session, { title, estimate, description, folder, parent }) {
   const state = readState(session);
   if (state.task) await closeTask(s, session, unfinished(state, 'closed when new work started.'), state.lastStop);
   const body = { title: clip(title, TITLE_MAX), category: s.category, estimate_minutes: estimate };
   if (s.workspace) body.workspace_id = s.workspace;
   if (description) body.description = description;
   if (folder) body.folder = folder;
+  if (parent) body.parent = parent;
   const change = { op: 'open', ref: randomUUID(), body, startedAt: new Date().toISOString() };
   await deliver(s, change);
   const made = change.made;
   const task = { ref: change.ref, id: made?.id ?? null, number: made?.number ?? null, title: made?.title ?? body.title, estimate, startedAt: made?.startedAt ?? change.startedAt };
   writeState(session, { ...readState(session), task, prompt: null, lastActivity: task.startedAt });
-  return task;
+  // Not kept in the session's state: only what start reports.
+  return { ...task, parent: made?.parent ?? null, parentRefused: change.parentRefused ?? null };
 }
 
 /** Adds a note to the open task: 'sent', 'kept' for later, or 'gone' when it was closed or removed in the app. */
@@ -607,6 +638,7 @@ function guidance(session, task, project) {
   const fields = [
     '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.',
     ...(project ? [`  The task is filed in the Task Queue folder "${project}", after this project. To file it under another project, add --folder "<project name>".`] : []),
+    '  If the user says the work is part of an existing Task Queue task, add --parent <its task number> to file it as a subtask of that task.',
   ].join('\n');
   if (!task) {
     return [
@@ -984,13 +1016,21 @@ const COMMANDS = {
       description = `${body}\n\n---\n${footer}`;
     }
     const folder = typeof flags.folder === 'string' ? clip(flags.folder.trim(), FOLDER_MAX) : s.folders ? projectOf(asked?.cwd) : '';
+    const parent = typeof flags.parent === 'string' ? clip(flags.parent.trim(), PARENT_MAX) : '';
     await sync(s, { now: true });
-    const task = await openTask(s, session, { title, estimate: estimate.value, description: description || undefined, folder: folder || undefined }).catch((err) =>
-      fail(`Could not open the task: ${err.code}: ${err.message}`),
-    );
+    const task = await openTask(s, session, {
+      title,
+      estimate: estimate.value,
+      description: description || undefined,
+      folder: folder || undefined,
+      parent: parent || undefined,
+    }).catch((err) => fail(`Could not open the task: ${err.code}: ${err.message}`));
     const est = `estimate ${task.estimate} minutes${estimate.given ? '' : ', the default: no --estimate given'}`;
     if (!task.number) return out(`Saved "${task.title}" (${est}) on this machine${keptBecause()}`);
-    out(`Started ${task.number}: ${task.title} (${est}).`);
+    const under = task.parent ? `, a subtask of ${task.parent}` : '';
+    // Filed on its own instead: the task still counts, so this is said, not failed.
+    const alone = task.parentRefused ? ` It was filed on its own, not under ${parent}: ${task.parentRefused}` : '';
+    out(`Started ${task.number}: ${task.title} (${est}${under}).${alone}`);
   },
 
   async note({ rest, flags }) {

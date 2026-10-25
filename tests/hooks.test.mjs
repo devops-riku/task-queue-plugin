@@ -93,7 +93,17 @@ const fake = spawn(process.execPath, ['-e', `
           r.statusCode = 422;
           return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'folder: Extra inputs are not permitted' }));
         }
-        const task = { task_number: 'TASK-9', title: JSON.parse(b).title, queue_entered_at: new Date().toISOString() };
+        const parent = JSON.parse(b).parent;
+        // /noparent is an older Task Queue that refuses the field; under /deep the parent is a subtask itself.
+        if (parent && q.url.startsWith('/noparent')) {
+          r.statusCode = 422;
+          return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'parent: Extra inputs are not permitted' }));
+        }
+        if (parent && q.url.startsWith('/deep')) {
+          r.statusCode = 409;
+          return r.end(JSON.stringify({ code: 'SUBTASK_DEPTH', message: parent + ' is a subtask itself. Subtasks go one level deep.' }));
+        }
+        const task = { task_number: 'TASK-9', title: JSON.parse(b).title, queue_entered_at: new Date().toISOString(), parent: parent ? { task_number: parent.toUpperCase(), title: 'Parent' } : null };
         return r.end(JSON.stringify({ link: { url: 'http://tq/api/v1/my/tasks/t9' }, task }));
       }
       if (q.url.startsWith('/missing')) { r.statusCode = 404; return r.end(JSON.stringify({ code: 'NOT_FOUND', message: 'Not Found' })); }
@@ -211,6 +221,36 @@ try {
   hook(h, 'prompt', { session_id: 'f', prompt: 'x', cwd: client }, { env: at('nofolder') });
   assert.deepEqual(startIn(h, ['--session', 'f', '--estimate', '20', 'X'], 'nofolder').slice(-2).map((q) => q.body.folder), ['Stars PH', undefined]);
   ok('older server: retried without the folder');
+
+  // Subtasks: --parent files the new task under an existing one; when that can't be done, it's filed on its own.
+  const startOut = (home, args, prefix) => {
+    const r = spawnSync(process.execPath, [TQ, 'start', ...args], { env: { ...process.env, TASK_QUEUE_HOME: home, ...at(prefix) }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return { out: r.stdout, sent: requests().filter((q) => q.url === `/${prefix}/api/v1/my/tasks`) };
+  };
+  h = fresh('parent');
+  assert.match(hook(h, 'prompt', { session_id: 'p', prompt: 'part of TASK-1', cwd: client }, { env: at('ok') }), /--parent <its task number>/);
+  ok('guidance tells how to file the work as a subtask');
+  let started = startOut(h, ['--session', 'p', '--estimate', '20', '--parent', 'task-1', 'Write the query'], 'ok');
+  assert.equal(started.sent.at(-1).body.parent, 'task-1');
+  assert.match(started.out, /^Started TASK-9: Write the query \(estimate 20 minutes, a subtask of TASK-1\)\.$/m);
+  ok('--parent: sent, and start says whose subtask it is');
+  started = startOut(h, ['--session', 'p', '--estimate', '20', 'No parent'], 'ok');
+  assert.equal(started.sent.at(-1).body.parent, undefined);
+  assert.doesNotMatch(started.out, /subtask/);
+  ok('no --parent: none sent');
+  for (const [prefix, why] of [['noparent', /Extra inputs/], ['deep', /one level deep/]]) {
+    h = fresh(`parent-${prefix}`);
+    started = startOut(h, ['--session', 'p', '--estimate', '20', '--folder', 'X', '--parent', 'TASK-1', 'Write the query'], prefix);
+    assert.deepEqual(started.sent.slice(-2).map((q) => q.body.parent), ['TASK-1', undefined]);
+    assert.equal(started.sent.at(-1).body.folder, 'X');
+    assert.match(started.out, /^Started TASK-9: Write the query \(estimate 20 minutes\)\. It was filed on its own, not under TASK-1: /m);
+    assert.match(started.out, why);
+    ok(`${prefix}: retried without the parent, filed on its own, and start says why`);
+  }
+  const parentCmd = `${tracker(h)} start --session p --estimate 20 --description "Part of the export." --parent TASK-1 "Write the query"`;
+  assert.equal(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: parentCmd } })).hookSpecificOutput.permissionDecision, 'allow');
+  ok('a start with --parent is still approved');
 
   // Idle closing: only after the agent finished replying and nothing happened since.
   const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
