@@ -58,7 +58,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 
 ## Deleting a task
 
-Run `delete <task number>` (e.g. `delete TASK-000120`) only when the user asks for that task to be deleted. It can't be undone, so the plugin doesn't approve it: Claude Code and Codex ask the user before it runs. By number, only tasks assigned to the user are found; for anyone else's, give the task's id. Deleting needs *Delete tasks* in the task's workspace, which members don't have by default. When it's refused, tell the user the reason `delete` printed and don't try another way.
+Run `delete <task number>` (e.g. `delete TASK-000120`) only when the user asks for that task to be deleted. It can't be undone, so the plugin doesn't approve it: the agent's own permission rules decide, as for any other command. By number, only tasks assigned to the user are found; for anyone else's, give the task's id. Deleting needs *Delete tasks* in the task's workspace, which members don't have by default. When it's refused, tell the user the reason `delete` printed and don't try another way.
 
 ## Subtasks
 

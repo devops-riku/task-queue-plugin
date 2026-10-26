@@ -440,7 +440,7 @@ try {
     assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }), '', command);
     assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }, { host: 'codex' }), '', command);
   }
-  ok('delete is never approved by the plugin: the user is asked');
+  ok('delete is never approved by the plugin, so the agent permission rules decide');
   assert.match(run(h, at('del'), 'start', '--session', 'd', '--estimate', '5', 'Old work').stdout, /^Started TASK-9/);
   since = requests().length;
   r = run(h, at('del'), 'delete', 'task-9');

@@ -94,7 +94,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
-| You ask the agent to delete a task | The agent runs `delete <task number>`. Claude Code and Codex ask you first, since it can't be undone, and Task Queue deletes it only if your role has *Delete tasks* in that workspace. |
+| You ask the agent to delete a task | The agent runs `delete <task number>`. It can't be undone, so the plugin doesn't approve it: your agent's own permission rules decide whether you're asked. Task Queue deletes it only if your role has *Delete tasks* in that workspace. |
 | You ask a quick question or say thanks | Nothing |
 
 The agent might not mark a task done. The tracker closes it anyway, at the time the agent last finished replying, and notes that it wasn't marked done. That happens in three cases:

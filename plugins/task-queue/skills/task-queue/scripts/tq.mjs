@@ -24,7 +24,7 @@
  *
  * In Claude Code and Codex the agent never has to ask before running the tracker: a hook approves exactly one
  * run of it, with nothing chained, piped, redirected or substituted. `delete` is the exception: it can't be
- * undone, so the user is asked first, as for any other command. Gemini CLI doesn't let an extension
+ * undone, so the agent's own permission rules decide, as for any other command. Gemini CLI doesn't let an extension
  * approve commands, so there the user approves them (or allows them with their own policy).
  *
  * When Task Queue can't be reached, nothing fails: tasks opened, notes and completions are kept in
@@ -150,7 +150,7 @@ const TRACKERS = [STABLE, fileURLToPath(import.meta.url)].map((p) => path.resolv
 /** Whether a shell command (Bash or PowerShell) is exactly one run of this tracker: `node <tracker> <args>`,
  * with nothing chained, piped, redirected, substituted or escaped, so approving it can't approve anything else.
  * Anything doubtful returns false and goes through Claude Code's normal permission check instead, and so does
- * `delete`, which can't be undone: the user is asked before it runs. */
+ * `delete`, which can't be undone. */
 function isTrackerCommand(command) {
   const tokens = [];
   let token = null;
