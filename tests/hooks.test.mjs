@@ -83,6 +83,11 @@ const fake = spawn(process.execPath, ['-e', `
       if (q.url.startsWith('/down')) { r.statusCode = 503; r.setHeader('content-type', 'text/html'); return r.end('<h1>503 Service Unavailable</h1>'); } // a proxy, its server down
       if (q.url.startsWith('/half/api/v1/my/tasks/')) { r.statusCode = 503; return r.end(); } // went down right after adding a task
       if (q.url.startsWith('/revoked')) { r.statusCode = 401; return r.end(JSON.stringify({ code: 'INVALID_API_KEY', message: 'This API key was revoked.' })); }
+      if (q.url.startsWith('/keyed') && q.method === 'GET' && q.url.endsWith('/my/tasks')) {
+        // A key made for one workspace: the list names that one only.
+        const ws = { id: 'ws-key', name: 'Neptune Tech', organization: 'Neptune', can_add_tasks: true, categories: [{ value: 'FEATURE', label: 'Feature' }], priorities: [], default_priority: 'MEDIUM' };
+        return r.end(JSON.stringify({ user: 'Ada Admin', url: 'http://tq/api/v1/my/tasks', tasks: [], workspaces: [ws], how_to_use: [] }));
+      }
       if (q.url.startsWith('/reject') && q.method === 'POST' && q.url.endsWith('/my/tasks')) {
         r.statusCode = 422;
         return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'category: FEATURE is not a category here' }));
@@ -371,6 +376,14 @@ try {
   hook(h, 'stop', { session_id: 'w' }, { env: at('slow') });
   assert.ok(Date.now() - t < 2000, `second hook waited ${Date.now() - t} ms`); assert.equal(outbox(h).length, 1);
   ok('hanging Task Queue: one try, then hooks skip it for a while');
+
+  // A key made for one workspace: setup takes that one, replacing a workspace saved for an older key.
+  h = fresh('keyed');
+  fs.writeFileSync(path.join(h, 'config.json'), JSON.stringify({ workspace: 'ws-old', category: 'FEATURE' }));
+  r = run(h, {}, 'setup', '--url', `http://127.0.0.1:${PORT}/keyed/api/v1`, '--key', 'tqk_fake');
+  assert.equal(r.status, 0, r.stderr);
+  const saved = JSON.parse(fs.readFileSync(path.join(h, 'config.json'), 'utf8'));
+  assert.deepEqual([saved.workspace, saved.category], ['ws-key', 'FEATURE']); ok('setup: a key for one workspace replaces the saved workspace');
 } finally {
   fake.kill();
 }
