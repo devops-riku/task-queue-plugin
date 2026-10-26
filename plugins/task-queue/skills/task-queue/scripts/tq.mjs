@@ -17,11 +17,14 @@
  *                                                            of that task).
  *   note [--session <id>] "<text>"                           Add a note to the open task.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
+ *   delete <task number or id>                               Delete a task in Task Queue (needs Delete tasks there).
+ *                                                            Only when the user asks: it can't be undone.
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
  *                                                            Hook entry points: JSON on stdin, never fail.
  *
  * In Claude Code and Codex the agent never has to ask before running the tracker: a hook approves exactly one
- * run of it, with nothing chained, piped, redirected or substituted. Gemini CLI doesn't let an extension
+ * run of it, with nothing chained, piped, redirected or substituted. `delete` is the exception: it can't be
+ * undone, so the user is asked first, as for any other command. Gemini CLI doesn't let an extension
  * approve commands, so there the user approves them (or allows them with their own policy).
  *
  * When Task Queue can't be reached, nothing fails: tasks opened, notes and completions are kept in
@@ -54,7 +57,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.7.1';
+const VERSION = '1.8.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -146,7 +149,8 @@ const TRACKERS = [STABLE, fileURLToPath(import.meta.url)].map((p) => path.resolv
 
 /** Whether a shell command (Bash or PowerShell) is exactly one run of this tracker: `node <tracker> <args>`,
  * with nothing chained, piped, redirected, substituted or escaped, so approving it can't approve anything else.
- * Anything doubtful returns false and goes through Claude Code's normal permission check instead. */
+ * Anything doubtful returns false and goes through Claude Code's normal permission check instead, and so does
+ * `delete`, which can't be undone: the user is asked before it runs. */
 function isTrackerCommand(command) {
   const tokens = [];
   let token = null;
@@ -173,7 +177,7 @@ function isTrackerCommand(command) {
   if (token !== null) tokens.push(token);
   if (!/^node(\.exe)?$/i.test(tokens[0] ?? '') || !tokens[1]) return false;
   const target = path.resolve(tokens[1].replace(/^~(?=\/)/, os.homedir())).replace(/\\/g, '/').toLowerCase();
-  return TRACKERS.includes(target);
+  return TRACKERS.includes(target) && parseArgs(tokens.slice(2)).rest[0] !== 'delete';
 }
 
 const stateFile = (session) => path.join(SESSIONS, `${String(session).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`);
@@ -378,6 +382,37 @@ const ended = (closed) =>
     : closed.gone ? 'already closed or not found in Task Queue'
       : closed.kept ? 'completion kept until Task Queue answers'
         : 'completed';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The task a number (TASK-000120, any case) or an id names, as { id, number, title }, or null when there's none.
+ * An id is read directly; a number is looked up among the tasks assigned to you. */
+async function findTask(s, ref) {
+  if (UUID.test(ref)) {
+    try {
+      const doc = await api(s, 'GET', `/my/tasks/${ref}`);
+      return { id: ref, number: doc.task.task_number, title: doc.task.title };
+    } catch (err) {
+      if (err.status === 404) return null;
+      throw err;
+    }
+  }
+  const list = await api(s, 'GET', '/my/tasks?status=all');
+  const task = (list.tasks ?? []).find((t) => t.task_number.toUpperCase() === ref.toUpperCase());
+  return task ? { id: task.id, number: task.task_number, title: task.title } : null;
+}
+
+/** After a task was deleted: a conversation that had it open has no task now. */
+function forgetTask(id) {
+  const names = fs.existsSync(SESSIONS) ? fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json')) : [];
+  for (const name of names) {
+    const session = name.slice(0, -'.json'.length);
+    const state = readState(session);
+    if (state.task?.id !== id) continue;
+    writeState(session, { ...state, task: null });
+    log('delete', `${named(state.task)} was deleted: no task is open in ${session} now`);
+  }
+}
 
 // ------------------------------------------------------------------ the outbox
 
@@ -1160,6 +1195,23 @@ const COMMANDS = {
     out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (${took}).`);
   },
 
+  async delete({ rest }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const ref = rest.join(' ').trim();
+    if (!ref) fail('Usage: delete <task number or id>, e.g. delete TASK-000120');
+    const task = await findTask(s, ref).catch((err) => fail(`Could not look up ${ref}: ${err.code}: ${err.message}`));
+    if (!task) fail(`No task ${ref} found. By number, only tasks assigned to you are found: for anyone else's, give the task's id.`);
+    try {
+      await api(s, 'DELETE', `/my/tasks/${task.id}`);
+    } catch (err) {
+      if (err.status === 405) fail(`${task.number} wasn't deleted: this Task Queue can't delete tasks through the API yet. Delete it in Task Queue.`);
+      fail(`${task.number} wasn't deleted: ${err.code}: ${err.message}`);
+    }
+    forgetTask(task.id);
+    out(`Deleted ${task.number}: ${task.title}.`);
+  },
+
   async hook({ rest, flags }) {
     const handler = HOOKS[rest[0]];
     const host = HOSTS.includes(flags.host) ? flags.host : 'claude';
@@ -1177,7 +1229,7 @@ COMMANDS.finish = COMMANDS.done;
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, start, note, done, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, start, note, done, delete, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);

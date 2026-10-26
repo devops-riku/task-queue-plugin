@@ -94,6 +94,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
+| You ask the agent to delete a task | The agent runs `delete <task number>`. Claude Code and Codex ask you first, since it can't be undone, and Task Queue deletes it only if your role has *Delete tasks* in that workspace. |
 | You ask a quick question or say thanks | Nothing |
 
 The agent might not mark a task done. The tracker closes it anyway, at the time the agent last finished replying, and notes that it wasn't marked done. That happens in three cases:
@@ -135,6 +136,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
 | `set folders on\|off` | Sets whether tasks are filed in a folder named after the project (default on) |
 | `start --estimate <minutes> --description "<text>" [--folder "<name>"] [--parent <task number>] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. `--parent` files the new task as a subtask of an existing task. |
+| `delete <task number or id>` | Deletes a task, with its notes and files. It needs *Delete tasks* in that workspace and can't be undone. By number it finds tasks assigned to you; give the id for anyone else's. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 
