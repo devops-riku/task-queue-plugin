@@ -26,7 +26,7 @@ You need four things:
 
 - **A Task Queue server with `POST /my/tasks`.** That's the personal API's "Add a task" endpoint. Your Task Queue's **API docs** page (`/docs`) lists it if it's there.
 - **The Take tasks (or Create tasks) permission** in the workspace your tasks should go to. Members have Take tasks by default.
-- **A personal API key**, from Task Queue → Profile → API keys.
+- **A personal API key**, from Task Queue → Profile → API keys, made for that workspace. A key works in the one workspace it's made for.
 - **Node 18 or later** on the machine the agent runs on.
 
 ## Install
@@ -68,7 +68,7 @@ Send your next prompt. The tracker notices it isn't set up yet, and the agent as
 
 Then it asks:
 
-- which workspace to use, if you're in several;
+- which workspace to use, if your key is an older one that covers several;
 - which category the tasks go under.
 
 That's the only time it asks. In Claude Code and Codex, the agent never stops to ask permission for the tracker: the plugin approves its own commands. It approves exactly one run of the tracker, with nothing chained, piped or substituted. Any other command goes through the agent's normal permission check.

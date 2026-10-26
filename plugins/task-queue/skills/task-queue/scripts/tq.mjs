@@ -54,7 +54,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -672,9 +672,9 @@ function setupRequest(session, s) {
   const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
   return [
     `The Task Queue tracker is installed but not set up: it still needs ${missing}. Before working on the first request, finish the setup:`,
-    '1. Ask the user for their Task Queue API URL (e.g. http://localhost:8000/api/v1) and their personal API key (Task Queue: Profile, API keys; it starts with tqk_). The key is saved only on this machine; never repeat it back or write it anywhere else.',
+    '1. Ask the user for their Task Queue API URL (e.g. http://localhost:8000/api/v1) and their personal API key (Task Queue: Profile, API keys, made for the workspace their tasks should go to; it starts with tqk_). The key is saved only on this machine; never repeat it back or write it anywhere else.',
     `2. Run: ${COMMAND} setup --url <url> --key <key>`,
-    `3. If it lists several workspaces, ask the user which one and run: ${COMMAND} set workspace <workspace id>`,
+    `3. If it lists several workspaces (only an older key, made before keys had a workspace, does), ask the user which one and run: ${COMMAND} set workspace <workspace id>`,
     `4. Ask which category the tasks go under (setup lists them) and run: ${COMMAND} set category <VALUE>`,
     `If the user does not want tracking, run: ${COMMAND} disable`,
   ].join('\n');
@@ -858,7 +858,12 @@ function pickCategory(workspace, wanted) {
 /** Fills in the workspace and category where the account leaves no choice, and says what's still missing. */
 function settle(s, me, flags = {}) {
   const addable = me.workspaces.filter((w) => w.can_add_tasks);
-  if (!addable.length) fail('This account can’t add tasks in any workspace: it needs Take tasks or Create tasks there. Ask a Task Queue admin.');
+  if (!addable.length) {
+    fail(
+      'This API key can’t add tasks in any workspace it works in: that needs a membership there with Take tasks or Create tasks. ' +
+        'Make a key for a workspace you’re a member of (Task Queue: Profile, API keys), or ask a Task Queue admin.',
+    );
+  }
   let workspace = addable.find((w) => w.id === (flags.workspace ?? s.workspace)) ?? null;
   if (flags.workspace && !workspace) fail(`Workspace ${flags.workspace} isn’t one this account can add tasks to.\n${describeWorkspaces(addable).join('\n')}`);
   if (!workspace && addable.length === 1) workspace = addable[0];

@@ -45,9 +45,9 @@ This uses the same API the script calls. It needs these environment variables:
 | Variable | Value |
 |----------|-------|
 | `TASK_QUEUE_URL` | The Task Queue API base, e.g. `http://localhost:8000/api/v1` |
-| `TASK_QUEUE_API_KEY` | A personal API key (Task Queue → Profile → API keys) |
+| `TASK_QUEUE_API_KEY` | A personal API key (Task Queue → Profile → API keys), made for the workspace your tasks go to |
 | `TASK_QUEUE_CATEGORY` | A category value, e.g. `FEATURE` |
-| `TASK_QUEUE_WORKSPACE` | A workspace id. Only needed if you belong to more than one workspace. |
+| `TASK_QUEUE_WORKSPACE` | A workspace id. Only needed with an older key, made before keys had a workspace, when you belong to more than one. |
 
 Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/json` on every call.
 

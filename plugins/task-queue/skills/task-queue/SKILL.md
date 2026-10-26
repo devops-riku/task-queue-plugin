@@ -28,12 +28,12 @@ Do these in order when tracking isn't set up, or when the user asks to set it up
 
 1. **Ask the user for two things in one message:**
    - Their Task Queue API URL, e.g. `http://localhost:8000/api/v1`. The link from Task Queue's Profile → Personal API (`…/api/v1/my/tasks`) works too.
-   - Their personal API key, generated in Task Queue under Profile → API keys. It starts with `tqk_`.
+   - Their personal API key, generated in Task Queue under Profile → API keys for the workspace their tasks should go to (**Works in**). It starts with `tqk_`. A key works in that one workspace only.
 
    Tell them the key is saved only on this machine, in `~/.task-queue/config.json`. If they'd rather keep it out of the chat, they can run setup themselves by typing:
    `! node "${CLAUDE_SKILL_DIR}/scripts/tq.mjs" setup --url <url> --key <key>`
 2. **Run `setup --url <url> --key <key>`.** It checks the key, saves the settings, and puts a copy of the tracker at `~/.task-queue/tq.mjs`, the path your start and done commands use. Never repeat the key back or write it anywhere else.
-3. **If setup asks for a workspace**, show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
+3. **If setup asks for a workspace** (only an older key, made before keys had a workspace, covers several), show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
 4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
 5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
 6. **Run `status`** and tell the user tracking is on. If the plugin was installed during this conversation and no Task Queue note came with the user's prompts, its hooks aren't loaded yet: tell the user to type `/reload-plugins` so tracking starts in this session instead of the next one.
