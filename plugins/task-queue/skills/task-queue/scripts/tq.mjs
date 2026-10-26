@@ -33,7 +33,7 @@
  * TASK_QUEUE_API_KEY, TASK_QUEUE_WORKSPACE and TASK_QUEUE_CATEGORY override the settings. No dependencies:
  * Node 18 or later.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -54,7 +54,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -354,6 +354,31 @@ const when = (iso) =>
 /** A task by its number, or by its title while it's still waiting in the outbox. */
 const named = (task) => task.number ?? `"${task.title}"`;
 
+/** Which API key a task or change belongs to: a short hash of it, never the key itself. The key alone decides the
+ * account and workspace, so the same key at another address of the same Task Queue still counts as the same. */
+const keyIdOf = (s) => createHash('sha256').update(String(s.key)).digest('hex').slice(0, 16);
+/** Opened with another API key, which this one can't see. Tasks from before 1.7.1 carry no keyId and count as the
+ * current key's. */
+const foreign = (s, task) => Boolean(task?.keyId) && task.keyId !== keyIdOf(s);
+
+/** The conversation's state, without its task when that was opened with another API key (the key changed by hand
+ * or in the environment, not through setup): nothing is sent for it under this key, and new work opens a new task. */
+function ownState(s, session) {
+  const state = readState(session);
+  if (!foreign(s, state.task)) return state;
+  log('key', `${named(state.task)} was opened with another API key: left as it is there`);
+  const next = { ...state, task: null };
+  writeState(session, next);
+  return next;
+}
+
+/** What closing a task came to, for the log. */
+const ended = (closed) =>
+  closed.foreign ? 'left as it is (opened with another API key)'
+    : closed.gone ? 'already closed or not found in Task Queue'
+      : closed.kept ? 'completion kept until Task Queue answers'
+        : 'completed';
+
 // ------------------------------------------------------------------ the outbox
 
 /** The changes waiting in the outbox, oldest first. */
@@ -526,7 +551,10 @@ async function sync(s, { now = false } = {}) {
         const file = path.join(OUTBOX, name);
         const change = readJson(file);
         try {
-          if (change) {
+          if (change && foreign(s, change)) {
+            // Kept under another API key: this one can't see its task, and would open new ones in the wrong place.
+            log('sync', `dropped the ${describe(change)}: it was made with another API key`);
+          } else if (change) {
             // Added but not yet started is written down at once, so even a killed hook never adds it twice.
             await send(s, change, () => writeWhole(file, change));
             if (change.op === 'open') rememberOpened(change.ref, change.made);
@@ -555,6 +583,7 @@ async function sync(s, { now = false } = {}) {
 /** Sends a change now, or keeps it in the outbox when Task Queue can't be reached or older changes are still
  * waiting there (those go first). Returns 'sent', 'gone' or 'kept'; any other failure is thrown. */
 async function deliver(s, change, { flush = true } = {}) {
+  change.keyId ??= keyIdOf(s);
   if (flush) await sync(s);
   if (!pending().length) {
     try {
@@ -584,26 +613,62 @@ async function openTask(s, session, { title, estimate, description, folder, pare
   const change = { op: 'open', ref: randomUUID(), body, startedAt: new Date().toISOString() };
   await deliver(s, change);
   const made = change.made;
-  const task = { ref: change.ref, id: made?.id ?? null, number: made?.number ?? null, title: made?.title ?? body.title, estimate, startedAt: made?.startedAt ?? change.startedAt };
+  const task = {
+    ref: change.ref, id: made?.id ?? null, number: made?.number ?? null, title: made?.title ?? body.title, estimate,
+    startedAt: made?.startedAt ?? change.startedAt, keyId: change.keyId,
+  };
   writeState(session, { ...readState(session), task, prompt: null, lastActivity: task.startedAt });
   // Not kept in the session's state: only what start reports.
   return { ...task, parent: made?.parent ?? null, parentRefused: change.parentRefused ?? null };
 }
 
-/** Adds a note to the open task: 'sent', 'kept' for later, or 'gone' when it was closed or removed in the app. */
-const noteTask = (s, task, text) => deliver(s, { op: 'note', id: task.id ?? null, ref: task.ref ?? null, text: clip(text, COMMENT_MAX) });
+/** Adds a note to the open task: 'sent', 'kept' for later, 'gone' when it was closed or removed in the app, or
+ * 'foreign' when it was opened with another API key (nothing is sent). */
+const noteTask = async (s, task, text) =>
+  foreign(s, task) ? 'foreign' : deliver(s, { op: 'note', id: task.id ?? null, ref: task.ref ?? null, text: clip(text, COMMENT_MAX) });
 
-/** Completes the conversation's open task at `at` (default now). Returns it with its end time and whether it was
- * only kept for later, or null. */
+/** Completes the conversation's open task at `at` (default now). Returns it with its end time and what came of it:
+ * `kept` for later, `gone` (already closed or not found in Task Queue), or `foreign` (opened with another API key,
+ * so nothing was sent); or null when no task is open. Either way the conversation has no task afterwards. */
 async function closeTask(s, session, note, at, { flush = true } = {}) {
   const state = readState(session);
   const task = state.task;
   if (!task) return null;
+  if (foreign(s, task)) {
+    writeState(session, { ...state, task: null });
+    return { ...task, endedAt: null, foreign: true };
+  }
   const change = { op: 'close', id: task.id ?? null, ref: task.ref ?? null, startedAt: task.startedAt, endedAt: notBefore(at ?? new Date().toISOString(), task.startedAt) };
   if (note) change.note = clip(note, NOTE_MAX);
   const outcome = await deliver(s, change, { flush });
   writeState(session, { ...readState(session), task: null });
-  return { ...task, endedAt: change.endedAt, kept: outcome === 'kept' };
+  return { ...task, endedAt: change.endedAt, kept: outcome === 'kept', gone: outcome === 'gone' };
+}
+
+/** Before setup switches to another API key: sends what the outbox holds under the old one, then
+ * closes every conversation's open task there, at its last reply. Returns the tasks closed and those it couldn't
+ * close (the old key was refused, or Task Queue didn't answer). */
+async function handOver(old) {
+  const closed = [];
+  const left = [];
+  await sync(old, { now: true });
+  if (!fs.existsSync(SESSIONS)) return { closed, left };
+  for (const name of fs.readdirSync(SESSIONS).filter((f) => f.endsWith('.json'))) {
+    const session = name.slice(0, -'.json'.length);
+    const state = readState(session);
+    if (!state.task || foreign(old, state.task)) continue;
+    try {
+      const done = await closeTask(old, session, unfinished(state, 'closed when the tracker switched to another API key.'), state.lastStop ?? state.lastActivity, { flush: false });
+      if (done.kept) left.push(done);
+      else if (!done.gone) closed.push(done);
+      log('setup', `${named(done)} ${ended(done)} (switched API key)`);
+    } catch (err) {
+      writeState(session, { ...readState(session), task: null });
+      left.push(state.task);
+      log('setup', `closing ${named(state.task)} under the old API key failed: ${err.code} ${err.message}`);
+    }
+  }
+  return { closed, left };
 }
 
 // ------------------------------------------------------------------ hooks
@@ -717,7 +782,7 @@ const HOOKS = {
     }
     if (!s.enabled) return;
     await sync(s);
-    let state = readState(session);
+    let state = ownState(s, session);
     // Idle means the agent finished replying and nothing happened since. A prompt, task or note after its last
     // reply means it is still working on a turn (a message sent mid-turn, or a background job reporting back),
     // however long that turn takes.
@@ -726,7 +791,7 @@ const HOOKS = {
       // Idle too long: that stretch of work ended when the agent last finished replying (or was last prompted).
       try {
         const closed = await closeTask(s, session, unfinished(state, 'closed after the conversation went idle.'), state.lastStop ?? state.lastActivity);
-        log('prompt', `${named(closed)} completed (idle)`);
+        log('prompt', `${named(closed)} ${ended(closed)} (idle)`);
       } catch (err) {
         log('prompt', `idle close failed: ${err.code} ${err.message}`);
       }
@@ -745,7 +810,8 @@ const HOOKS = {
     if (!state.task && !state.prompt) return;
     if (state.task && state.prompt && s.promptText && connected(s)) {
       try {
-        if ((await noteTask(s, state.task, `Prompt: ${state.prompt.text}`)) === 'gone') state.task = null; // closed in the app
+        // Closed in the app, or opened with another API key: either way it's no longer this conversation's.
+        if (['gone', 'foreign'].includes(await noteTask(s, state.task, `Prompt: ${state.prompt.text}`))) state.task = null;
       } catch (err) {
         log('stop', `note failed: ${err.code} ${err.message}`);
       }
@@ -769,8 +835,8 @@ const HOOKS = {
         if (session === input.session_id || session === MANUAL || Date.now() - lastActive(state) < ABANDONED_MS) continue;
         try {
           if (state.task) {
-            await closeTask(s, session, unfinished(state, 'the conversation never ended properly.'), state.lastStop ?? state.lastActivity);
-            log('session-start', `${named(state.task)} closed (abandoned conversation)`);
+            const closed = await closeTask(s, session, unfinished(state, 'the conversation never ended properly.'), state.lastStop ?? state.lastActivity);
+            log('session-start', `${named(closed)} ${ended(closed)} (abandoned conversation)`);
           }
           fs.rmSync(path.join(SESSIONS, name), { force: true });
         } catch (err) {
@@ -791,7 +857,7 @@ const HOOKS = {
     const state = readState(session);
     if (state.task && connected(s)) {
       const closed = await closeTask(s, session, unfinished(state, 'closed when the conversation ended.'), state.lastStop, { flush: false });
-      log('session-end', `${named(closed)} completed (conversation ended)`);
+      log('session-end', `${named(closed)} ${ended(closed)} (conversation ended)`);
     }
     fs.rmSync(stateFile(session), { force: true });
   },
@@ -912,11 +978,21 @@ const COMMANDS = {
     const key = typeof flags.key === 'string' ? flags.key.trim() : s.key;
     if (!url || !key) fail('Give both: setup --url <Task Queue API URL> --key <personal API key>');
     if (!key.startsWith('tqk_')) fail('That isn’t a Task Queue API key: keys start with tqk_. Generate one under Profile → API keys.');
+    const old = s;
     s = { ...s, url, key };
     const me = await account(s);
     const { addable, workspace, changes } = settle(s, me, flags);
+    // Another key: what the old one opened is closed there first, since the new one can't see it.
+    const handed = connected(old) && keyIdOf(old) !== keyIdOf(s) ? await handOver(old) : { closed: [], left: [] };
     s = saveSettings({ url, key, ...changes, enabled: true });
     const next = [];
+    if (handed.closed.length) next.push(`Closed under the old API key: ${handed.closed.map(named).join(', ')}.`);
+    if (handed.left.length) {
+      next.push(
+        `Still open under the old API key, which was refused or didn't answer: ${handed.left.map(named).join(', ')}. ` +
+          'Close them in Task Queue under that account.',
+      );
+    }
     if (!workspace) next.push('Next: choose the workspace with  set workspace <workspace id>', ...describeWorkspaces(addable));
     else if (!s.category) next.push(`Next: choose the category with  set category <VALUE>  (in ${workspace.name}: ${workspace.categories.map((c) => c.value).join(', ')})`);
     if (ready(s)) next.push(RELOAD_HINT);
@@ -1052,6 +1128,10 @@ const COMMANDS = {
       writeState(session, { ...state, task: null });
       fail(`${named(state.task)} was closed or removed in Task Queue: start a new task.`);
     }
+    if (noted === 'foreign') {
+      writeState(session, { ...state, task: null });
+      fail(`${named(state.task)} was opened with a different API key, which this one can't see: start a new task.`);
+    }
     writeState(session, { ...state, lastActivity: new Date().toISOString() });
     out(noted === 'kept' ? `Saved the note on this machine${keptBecause()}` : `Noted on ${state.task.number}.`);
   },
@@ -1063,6 +1143,18 @@ const COMMANDS = {
     await sync(s, { now: true });
     const closed = await closeTask(s, session, rest.join(' ').trim() || 'Done.').catch((err) => fail(`Could not complete the task: ${err.code}: ${err.message}`));
     if (!closed) return out('No task is open.');
+    if (closed.foreign) {
+      return out(
+        `${named(closed)} was opened with a different API key, so this one can't complete it. ` +
+          'Close it in Task Queue under the account that opened it. No task is open here now.',
+      );
+    }
+    if (closed.gone) {
+      return out(
+        `${named(closed)} wasn't completed: Task Queue says it's already closed or removed, or this API key can't see it. ` +
+          'No task is open here now.',
+      );
+    }
     const took = `took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated`;
     if (closed.kept) return out(`Saved the completion of "${closed.title}" (ended ${when(closed.endedAt)}, ${took}) on this machine${keptBecause()}`);
     out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (${took}).`);

@@ -82,6 +82,10 @@ const fake = spawn(process.execPath, ['-e', `
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
       if (q.url.startsWith('/down')) { r.statusCode = 503; r.setHeader('content-type', 'text/html'); return r.end('<h1>503 Service Unavailable</h1>'); } // a proxy, its server down
       if (q.url.startsWith('/half/api/v1/my/tasks/')) { r.statusCode = 503; return r.end(); } // went down right after adding a task
+      if (q.url.startsWith('/lost/api/v1/my/tasks/') && b && JSON.parse(b).ended_at) { // removed in the app before it was done
+        r.statusCode = 404;
+        return r.end(JSON.stringify({ code: 'NOT_FOUND', message: 'Task not found.' }));
+      }
       if (q.url.startsWith('/revoked')) { r.statusCode = 401; return r.end(JSON.stringify({ code: 'INVALID_API_KEY', message: 'This API key was revoked.' })); }
       if (q.url.startsWith('/keyed') && q.method === 'GET' && q.url.endsWith('/my/tasks')) {
         // A key made for one workspace: the list names that one only.
@@ -384,6 +388,40 @@ try {
   assert.equal(r.status, 0, r.stderr);
   const saved = JSON.parse(fs.readFileSync(path.join(h, 'config.json'), 'utf8'));
   assert.deepEqual([saved.workspace, saved.category], ['ws-key', 'FEATURE']); ok('setup: a key for one workspace replaces the saved workspace');
+
+  // Switching keys with setup: the old key's open tasks are closed under the old key first, since the new one can't see them.
+  const NOENV = { TASK_QUEUE_URL: '', TASK_QUEUE_API_KEY: '', TASK_QUEUE_CATEGORY: '', TASK_QUEUE_WORKSPACE: '' };
+  h = fresh('switch');
+  fs.writeFileSync(path.join(h, 'config.json'), JSON.stringify({ url: `http://127.0.0.1:${PORT}/ok/api/v1`, key: 'tqk_old', category: 'FEATURE' }));
+  assert.match(run(h, NOENV, 'start', '--session', 'one', '--estimate', '5', 'Old work').stdout, /^Started TASK-9/);
+  since = requests().length;
+  r = run(h, NOENV, 'setup', '--url', `http://127.0.0.1:${PORT}/keyed/api/v1`, '--key', 'tqk_new');
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(requests().slice(since).some((q) => q.url === '/ok/api/v1/my/tasks/t9' && q.body?.ended_at));
+  assert.match(r.stdout, /Closed under the old API key: TASK-9\./);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h, 'sessions', 'one.json'), 'utf8')).task, null);
+  ok('setup with another key: the old key closes its open task first');
+  assert.match(run(h, NOENV, 'start', '--session', 'one', '--estimate', '5', 'New work').stdout, /^Started TASK-9/);
+  since = requests().length;
+  assert.equal(run(h, NOENV, 'setup', '--key', 'tqk_new').status, 0);
+  assert.ok(!requests().slice(since).some((q) => q.body?.ended_at)); ok('setup with the same key: closes nothing');
+
+  // A key changed outside setup (here, in the environment): nothing is sent for the old key's task, and done says so.
+  h = fresh('switch-env');
+  assert.match(run(h, at('ok'), 'start', '--session', 'e', '--estimate', '5', 'Env work').stdout, /^Started TASK-9/);
+  assert.match(run(h, at('ok'), 'start', '--session', 'p', '--estimate', '5', 'Hook work').stdout, /^Started TASK-9/);
+  since = requests().length;
+  const OTHER = { ...at('ok'), TASK_QUEUE_API_KEY: 'tqk_other' };
+  r = run(h, OTHER, 'done', '--session', 'e', 'Finished.');
+  assert.match(r.stdout, /opened with a different API key/); assert.doesNotMatch(r.stdout, /Completed/);
+  assert.doesNotMatch(hook(h, 'prompt', { session_id: 'p', prompt: 'more' }, { env: OTHER }), /TASK-9/);
+  assert.ok(!requests().slice(since).some((q) => q.body?.ended_at || q.body?.comment)); ok('key changed outside setup: the old task is left alone');
+
+  // A task removed in the app before it was done isn't reported as completed.
+  h = fresh('lost');
+  assert.match(run(h, at('lost'), 'start', '--session', 'l', '--estimate', '5', 'Lost work').stdout, /^Started TASK-9/);
+  r = run(h, at('lost'), 'done', '--session', 'l', 'Finished.');
+  assert.match(r.stdout, /wasn't completed/); assert.doesNotMatch(r.stdout, /^Completed/); ok('done on a task Task Queue no longer has: not reported as completed');
 } finally {
   fake.kill();
 }
