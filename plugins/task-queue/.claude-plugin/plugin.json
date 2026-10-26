@@ -1,6 +1,6 @@
 {
   "name": "task-queue",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Claude logs its own work as tasks in your Task Queue account: it opens a task with its estimate when new work starts and marks it done with the end time when finished, so admins can track AI coding activity.",
   "author": {
     "name": "devops-riku"

@@ -77,7 +77,7 @@ const fake = spawn(process.execPath, ['-e', `
   const fs = require('fs');
   require('http').createServer((q, r) => {
     let b = ''; q.on('data', (c) => (b += c)); q.on('end', () => {
-      fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null }) + '\\n');
+      fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null, ...(q.method === 'DELETE' ? { method: 'DELETE' } : {}) }) + '\\n');
       r.setHeader('content-type', 'application/json');
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
       if (q.url.startsWith('/down')) { r.statusCode = 503; r.setHeader('content-type', 'text/html'); return r.end('<h1>503 Service Unavailable</h1>'); } // a proxy, its server down
@@ -86,6 +86,17 @@ const fake = spawn(process.execPath, ['-e', `
         r.statusCode = 404;
         return r.end(JSON.stringify({ code: 'NOT_FOUND', message: 'Task not found.' }));
       }
+      if (/^\\/(del|nodelete)\\//.test(q.url) && q.method === 'GET' && q.url.endsWith('/my/tasks?status=all')) {
+        // TASK-9 is the account's to delete; TASK-10 needs Delete tasks, which it doesn't have.
+        const tasks = [{ id: 't9', task_number: 'TASK-9', title: 'Old work' }, { id: 't10', task_number: 'TASK-10', title: 'Kept work' }];
+        return r.end(JSON.stringify({ user: 'Ada Admin', tasks, workspaces: [] }));
+      }
+      if (q.url.startsWith('/del/') && q.method === 'DELETE') {
+        if (q.url.endsWith('/my/tasks/t9')) { r.statusCode = 204; return r.end(); }
+        r.statusCode = 403;
+        return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Deleting a task needs the Delete tasks permission in its workspace.' }));
+      }
+      if (q.url.startsWith('/nodelete/') && q.method === 'DELETE') { r.statusCode = 405; return r.end(JSON.stringify({ detail: 'Method Not Allowed' })); } // an older Task Queue
       if (q.url.startsWith('/revoked')) { r.statusCode = 401; return r.end(JSON.stringify({ code: 'INVALID_API_KEY', message: 'This API key was revoked.' })); }
       if (q.url.startsWith('/keyed') && q.method === 'GET' && q.url.endsWith('/my/tasks')) {
         // A key made for one workspace: the list names that one only.
@@ -422,6 +433,28 @@ try {
   assert.match(run(h, at('lost'), 'start', '--session', 'l', '--estimate', '5', 'Lost work').stdout, /^Started TASK-9/);
   r = run(h, at('lost'), 'done', '--session', 'l', 'Finished.');
   assert.match(r.stdout, /wasn't completed/); assert.doesNotMatch(r.stdout, /^Completed/); ok('done on a task Task Queue no longer has: not reported as completed');
+
+  // Deleting a task: the plugin never approves it (it can't be undone), and Task Queue decides whether the account may.
+  h = fresh('delete');
+  for (const command of [`${tracker(h)} delete TASK-9`, `${tracker(h)} --session d delete TASK-9`]) {
+    assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }), '', command);
+    assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }, { host: 'codex' }), '', command);
+  }
+  ok('delete is never approved by the plugin, so the agent permission rules decide');
+  assert.match(run(h, at('del'), 'start', '--session', 'd', '--estimate', '5', 'Old work').stdout, /^Started TASK-9/);
+  since = requests().length;
+  r = run(h, at('del'), 'delete', 'task-9');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Deleted TASK-9: Old work\./);
+  assert.deepEqual(requests().slice(since).filter((q) => q.method === 'DELETE').map((q) => q.url), ['/del/api/v1/my/tasks/t9']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h, 'sessions', 'd.json'), 'utf8')).task, null);
+  ok('delete: by its number, and the conversation that had it open has no task now');
+  r = run(h, at('del'), 'delete', 'TASK-10');
+  assert.equal(r.status, 1); assert.match(r.stderr, /TASK-10 wasn't deleted: FORBIDDEN: Deleting a task needs the Delete tasks permission/);
+  ok('delete without Delete tasks: refused, with the reason');
+  r = run(h, at('del'), 'delete', 'TASK-404');
+  assert.equal(r.status, 1); assert.match(r.stderr, /No task TASK-404 found/); ok('delete: an unknown number is not found');
+  r = run(h, at('nodelete'), 'delete', 'TASK-9');
+  assert.equal(r.status, 1); assert.match(r.stderr, /can't delete tasks through the API yet/); ok('delete on an older Task Queue: says to delete it in the app');
 } finally {
   fake.kill();
 }

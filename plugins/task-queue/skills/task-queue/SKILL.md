@@ -54,6 +54,12 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 | `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
+| `delete <task number or id>` | Deletes a task in Task Queue, with its notes and files. See below. |
+
+## Deleting a task
+
+Run `delete <task number>` (e.g. `delete TASK-000120`) only when the user asks for that task to be deleted. It can't be undone, so the plugin doesn't approve it: the agent's own permission rules decide, as for any other command. By number, only tasks assigned to the user are found; for anyone else's, give the task's id. Deleting needs *Delete tasks* in the task's workspace, which members don't have by default. When it's refused, tell the user the reason `delete` printed and don't try another way.
+
 ## Subtasks
 
 When the user says the work is part of an existing Task Queue task (e.g. TASK-000120), add `--parent TASK-000120` to `start`. The new task is filed as a subtask of that task, and `start` says so. Adding subtasks needs *Edit tasks* in that workspace, as in the app. If the task can't go there (no *Edit tasks*, that task is a subtask itself, closed or cancelled, or the Task Queue is older), it's filed on its own and `start` says why. That isn't a failure: carry on.

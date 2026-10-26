@@ -31,6 +31,7 @@ After that, these are your commands:
 | New work that's part of an existing task | Add `--parent <its task number>` to `start`, e.g. `--parent TASK-000120`, to file it as a subtask of that task |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
+| The user asks you to delete a task | `node ~/.task-queue/tq.mjs delete <task number>`. Only then: it can't be undone, and it needs *Delete tasks* in that workspace |
 
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
@@ -74,6 +75,8 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
    ```json
    {"ended_at": "<now, ISO 8601 with a UTC offset>", "completion_note": "<what you did>"}
    ```
+
+Only when the user asks you to delete a task: `DELETE $TASK_QUEUE_URL/my/tasks/<id>`. It answers 204, and can't be undone. It needs *Delete tasks* in the task's workspace (403 otherwise).
 
 In PowerShell, use `Invoke-RestMethod` or `curl.exe`, never plain `curl`. Every error comes back as JSON with a `code` and a `message`, and the message says what to fix. Your Task Queue's **API docs** page (`/docs`) lists every endpoint.
 
