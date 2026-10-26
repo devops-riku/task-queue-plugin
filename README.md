@@ -71,6 +71,8 @@ Then it asks:
 - which workspace to use, if your key is an older one that covers several;
 - which category the tasks go under.
 
+To switch to another API key, run setup again with it. The tasks the old key has open, in every conversation, are closed under the old key first, at the agent's last reply, since the new key can't see them; setup names any it couldn't close. A key changed any other way (by hand, or in an environment variable) leaves those tasks as they are: the agent opens new ones and nothing is sent for the old ones.
+
 That's the only time it asks. In Claude Code and Codex, the agent never stops to ask permission for the tracker: the plugin approves its own commands. It approves exactly one run of the tracker, with nothing chained, piped or substituted. Any other command goes through the agent's normal permission check.
 
 To keep the key out of the chat, run setup yourself in a terminal. The plugin's hooks keep a copy of the tracker at `~/.task-queue/tq.mjs` (in PowerShell, write `$HOME` instead of `~`):

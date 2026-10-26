@@ -35,6 +35,8 @@ Do these in order when tracking isn't set up, or when the user asks to set it up
 2. **Run `setup --url <url> --key <key>`.** It checks the key, saves the settings, and puts a copy of the tracker at `~/.task-queue/tq.mjs`, the path your start and done commands use. Never repeat the key back or write it anywhere else.
 3. **If setup asks for a workspace** (only an older key, made before keys had a workspace, covers several), show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
 4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
+
+To switch to another API key, run `setup --key <new key>` (and `--url` if Task Queue moved). The tasks the old key has open, in every conversation, are closed under the old key first, at the agent's last reply, since the new key can't see them; setup names any it couldn't close. A key changed any other way (by hand, or in an environment variable) leaves those tasks as they are: the agent opens new ones and nothing is sent for the old ones. Pass on any tasks setup says it couldn't close.
 5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
 6. **Run `status`** and tell the user tracking is on. If the plugin was installed during this conversation and no Task Queue note came with the user's prompts, its hooks aren't loaded yet: tell the user to type `/reload-plugins` so tracking starts in this session instead of the next one.
 

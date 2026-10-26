@@ -21,7 +21,9 @@ You need Node 18 or later. The user sets it up once, outside the agent, from a c
 node <clone>/plugins/task-queue/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
 ```
 
-Setup puts the tracker at `~/.task-queue/tq.mjs`. After that, these are your commands:
+Setup puts the tracker at `~/.task-queue/tq.mjs`. To switch to another API key, run setup again with it. The tasks the old key has open, in every conversation, are closed under the old key first, at the agent's last reply, since the new key can't see them; setup names any it couldn't close. A key changed any other way (by hand, or in an environment variable) leaves those tasks as they are: the agent opens new ones and nothing is sent for the old ones.
+
+After that, these are your commands:
 
 | When | Run |
 |------|-----|
