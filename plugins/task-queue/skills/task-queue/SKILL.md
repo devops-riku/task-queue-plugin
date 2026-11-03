@@ -62,7 +62,7 @@ Run `delete <task number>` (e.g. `delete TASK-000120`) only when the user asks f
 
 ## Projects and subprojects
 
-Tasks are filed in a project named after the repository. When the user says the work belongs somewhere else, add `--folder` to `start`: `--folder "<project name>"` for another project, or `--folder "<project name> / <subproject name>"` for a subproject, e.g. `--folder "Business System / Aivals"`. Use the names the user gives: they match ignoring case, and a level that doesn't exist yet is made, so a misspelled one becomes a new project. A single name is always a top-level project, even when a subproject has that name, so give a subproject's whole path. If the path can't be used (more than 4 levels, say), the task is added without it and `start` says why. That isn't a failure: tell the user and carry on.
+Tasks are filed in a project named after the repository. When the user says the work belongs somewhere else, add `--folder` to `start`: `--folder "<project name>"` for another project, or `--folder "<project name> / <subproject name>"` for a subproject, e.g. `--folder "Platform / API"`. Use the names the user gives: they match ignoring case, and a level that doesn't exist yet is made, so a misspelled one becomes a new project. A single name is always a top-level project, even when a subproject has that name, so give a subproject's whole path. If the path can't be used (more than 4 levels, say), the task is added without it and `start` says why. That isn't a failure: tell the user and carry on.
 
 ## Subtasks
 

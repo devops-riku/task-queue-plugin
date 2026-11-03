@@ -256,8 +256,8 @@ try {
   h = fresh('subproject');
   assert.match(hook(h, 'prompt', { session_id: 's', prompt: 'x', cwd: client }, { env: at('ok') }), /--folder "<project name> \/ <subproject name>"/);
   ok('guidance tells how to file under a subproject');
-  for (const given of ['Business System/Aivals', 'Business System / Aivals', '  Business System  /  Aivals ']) {
-    assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', given, 'Fix it']).at(-1).body.folder, 'Business System / Aivals');
+  for (const given of ['Platform/API', 'Platform / API', '  Platform  /  API ']) {
+    assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', given, 'Fix it']).at(-1).body.folder, 'Platform / API');
   }
   ok('--folder sends a path as it reads in Task Queue');
   const long = 'x'.repeat(70);
@@ -265,7 +265,7 @@ try {
   ok('a long name is clipped on its own: the levels after it stay');
   assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', 'y'.repeat(70), 'Fix it']).at(-1).body.folder, `${'y'.repeat(59)}…`);
   ok('one long name is still clipped to what Task Queue takes');
-  const pathCmd = `${tracker(h)} start --session s --estimate 20 --description "In the subproject." --folder "Business System / Aivals" "Fix it"`;
+  const pathCmd = `${tracker(h)} start --session s --estimate 20 --description "In the subproject." --folder "Platform / API" "Fix it"`;
   assert.equal(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: pathCmd } })).hookSpecificOutput.permissionDecision, 'allow');
   ok('a start with a path is still approved');
   for (const [prefix, why] of [['badpath', /at most 4 levels deep/], ['toodeep', /nested at most 4 levels deep/]]) {
