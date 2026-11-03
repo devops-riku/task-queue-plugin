@@ -12,7 +12,7 @@
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
- *   start [--session <id>] --estimate <minutes> [--description "<text>"] [--folder "<name>"] [--parent <task number>] "<title>"
+ *   start [--session <id>] --estimate <minutes> [--description "<text>"] [--folder "<project>[ / <subproject>]"] [--parent <task number>] "<title>"
  *                                                            Open and start a task (with --parent, as a subtask
  *                                                            of that task).
  *   note [--session <id>] "<text>"                           Add a note to the open task.
@@ -57,7 +57,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -278,6 +278,10 @@ const unreachable = (err) => err instanceof ApiError && [0, 502, 503, 504].inclu
 
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
+/** A project's name or its path, as in "Platform / API". Each level is clipped on its own, so a long name can't cut
+ * the levels after it off. */
+const folderPath = (text) => text.split('/').map((level) => clip(level.trim(), FOLDER_MAX)).join(' / ');
+
 /** The project a working directory belongs to: its git repository's folder name, or else the directory's own.
  * None for the home directory or a drive root, which aren't projects. */
 function projectOf(cwd) {
@@ -485,16 +489,24 @@ function parentRefused(err) {
   return err.status === 422 && /parent/i.test(err.message);
 }
 
+/** Whether Task Queue refused a new task because of its project: a path it can't make, one it couldn't make just then,
+ * or (an older Task Queue) the field is unknown. */
+function folderRefused(err) {
+  if (['FOLDER_NOT_FOUND', 'FOLDER_TOO_DEEP', 'FOLDER_NAME_TAKEN'].includes(err.code)) return true;
+  return err.status === 422 && /folder/i.test(err.message);
+}
+
 /** Adds the task of an 'open' change. What Task Queue refuses that the task can do without is dropped and the add
- * tried again: a folder an older Task Queue doesn't know, or a parent that can't take it (the task is then filed on
- * its own, and `change.parentRefused` says why). */
+ * tried again, and the change says why: a project that can't be used (`change.folderRefused`), or a parent that can't
+ * take it, so the task is filed on its own (`change.parentRefused`). */
 async function addTask(s, change) {
   for (;;) {
     try {
       return await api(s, 'POST', '/my/tasks', change.body);
     } catch (err) {
-      if (change.body.folder && err.status === 422 && /folder/i.test(err.message)) {
-        log('start', `this Task Queue has no project folders; "${change.body.folder}" not used`);
+      if (change.body.folder && folderRefused(err)) {
+        log('start', `not filed in "${change.body.folder}": ${err.code} ${err.message}`);
+        change.folderRefused = err.message;
         delete change.body.folder;
       } else if (change.body.parent && parentRefused(err)) {
         log('start', `not filed under ${change.body.parent}: ${err.code} ${err.message}`);
@@ -654,7 +666,7 @@ async function openTask(s, session, { title, estimate, description, folder, pare
   };
   writeState(session, { ...readState(session), task, prompt: null, lastActivity: task.startedAt });
   // Not kept in the session's state: only what start reports.
-  return { ...task, parent: made?.parent ?? null, parentRefused: change.parentRefused ?? null };
+  return { ...task, parent: made?.parent ?? null, parentRefused: change.parentRefused ?? null, folderRefused: change.folderRefused ?? null };
 }
 
 /** Adds a note to the open task: 'sent', 'kept' for later, 'gone' when it was closed or removed in the app, or
@@ -737,7 +749,7 @@ function guidance(session, task, project) {
   // Admins read these. One line without $, backticks or backslashes also keeps the command auto-approved.
   const fields = [
     '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.',
-    ...(project ? [`  The task is filed in the Task Queue folder "${project}", after this project. To file it under another project, add --folder "<project name>".`] : []),
+    ...(project ? [`  The task is filed in the Task Queue folder "${project}", after this project. To file it under another project, add --folder "<project name>"; under a subproject, --folder "<project name> / <subproject name>".`] : []),
     '  If the user says the work is part of an existing Task Queue task, add --parent <its task number> to file it as a subtask of that task.',
   ].join('\n');
   if (!task) {
@@ -1131,7 +1143,7 @@ const COMMANDS = {
       const body = [summary, request && (summary ? `Request:\n${request}` : request)].filter(Boolean).join('\n\n');
       description = `${body}\n\n---\n${footer}`;
     }
-    const folder = typeof flags.folder === 'string' ? clip(flags.folder.trim(), FOLDER_MAX) : s.folders ? projectOf(asked?.cwd) : '';
+    const folder = typeof flags.folder === 'string' ? folderPath(flags.folder) : s.folders ? projectOf(asked?.cwd) : '';
     const parent = typeof flags.parent === 'string' ? clip(flags.parent.trim(), PARENT_MAX) : '';
     await sync(s, { now: true });
     const task = await openTask(s, session, {
@@ -1146,7 +1158,8 @@ const COMMANDS = {
     const under = task.parent ? `, a subtask of ${task.parent}` : '';
     // Filed on its own instead: the task still counts, so this is said, not failed.
     const alone = task.parentRefused ? ` It was filed on its own, not under ${parent}: ${task.parentRefused}` : '';
-    out(`Started ${task.number}: ${task.title} (${est}${under}).${alone}`);
+    const unfiled = task.folderRefused ? ` It wasn't filed in "${folder}": ${task.folderRefused}` : '';
+    out(`Started ${task.number}: ${task.title} (${est}${under}).${alone}${unfiled}`);
   },
 
   async note({ rest, flags }) {
