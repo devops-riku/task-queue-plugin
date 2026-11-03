@@ -28,7 +28,7 @@ After that, these are your commands:
 | When | Run |
 |------|-----|
 | New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" --folder "<project name>" "<short title>"` |
-| New work in a subproject | Write `--folder "<project name> / <subproject name>"` in `start`, e.g. `--folder "Business System / Aivals"`. A single name is always a top-level project |
+| New work in a subproject | Write `--folder "<project name> / <subproject name>"` in `start`, e.g. `--folder "Platform / API"`. A single name is always a top-level project |
 | New work that's part of an existing task | Add `--parent <its task number>` to `start`, e.g. `--parent TASK-000120`, to file it as a subtask of that task |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
