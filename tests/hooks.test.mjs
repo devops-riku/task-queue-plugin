@@ -113,6 +113,15 @@ const fake = spawn(process.execPath, ['-e', `
           r.statusCode = 422;
           return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'folder: Extra inputs are not permitted' }));
         }
+        // Under /badpath the path can't be made; under /toodeep it's refused when it's made.
+        if (q.url.startsWith('/badpath') && JSON.parse(b).folder) {
+          r.statusCode = 422;
+          return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'folder: Value error, a project path goes at most 4 levels deep' }));
+        }
+        if (q.url.startsWith('/toodeep') && JSON.parse(b).folder) {
+          r.statusCode = 409;
+          return r.end(JSON.stringify({ code: 'FOLDER_TOO_DEEP', message: 'Folders can be nested at most 4 levels deep.' }));
+        }
         const parent = JSON.parse(b).parent;
         // /noparent is an older Task Queue that refuses the field; under /deep the parent is a subtask itself.
         if (parent && q.url.startsWith('/noparent')) {
@@ -241,6 +250,34 @@ try {
   hook(h, 'prompt', { session_id: 'f', prompt: 'x', cwd: client }, { env: at('nofolder') });
   assert.deepEqual(startIn(h, ['--session', 'f', '--estimate', '20', 'X'], 'nofolder').slice(-2).map((q) => q.body.folder), ['Stars PH', undefined]);
   ok('older server: retried without the folder');
+
+  // Subprojects: --folder takes a path, and a project that can't be used doesn't cost the task.
+  const startRun = (home, args, prefix) => spawnSync(process.execPath, [TQ, 'start', ...args], { env: { ...process.env, TASK_QUEUE_HOME: home, ...at(prefix) }, encoding: 'utf8' });
+  h = fresh('subproject');
+  assert.match(hook(h, 'prompt', { session_id: 's', prompt: 'x', cwd: client }, { env: at('ok') }), /--folder "<project name> \/ <subproject name>"/);
+  ok('guidance tells how to file under a subproject');
+  for (const given of ['Business System/Aivals', 'Business System / Aivals', '  Business System  /  Aivals ']) {
+    assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', given, 'Fix it']).at(-1).body.folder, 'Business System / Aivals');
+  }
+  ok('--folder sends a path as it reads in Task Queue');
+  const long = 'x'.repeat(70);
+  assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', `${long} / API`, 'Fix it']).at(-1).body.folder, `${'x'.repeat(59)}… / API`);
+  ok('a long name is clipped on its own: the levels after it stay');
+  assert.equal(startIn(h, ['--session', 's', '--estimate', '20', '--folder', 'y'.repeat(70), 'Fix it']).at(-1).body.folder, `${'y'.repeat(59)}…`);
+  ok('one long name is still clipped to what Task Queue takes');
+  const pathCmd = `${tracker(h)} start --session s --estimate 20 --description "In the subproject." --folder "Business System / Aivals" "Fix it"`;
+  assert.equal(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: pathCmd } })).hookSpecificOutput.permissionDecision, 'allow');
+  ok('a start with a path is still approved');
+  for (const [prefix, why] of [['badpath', /at most 4 levels deep/], ['toodeep', /nested at most 4 levels deep/]]) {
+    h = fresh(`folder-${prefix}`);
+    const given = 'A / B / C / D / E';
+    const r = startRun(h, ['--session', 's', '--estimate', '20', '--folder', given, 'Fix it'], prefix);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(requests().filter((q) => q.url === `/${prefix}/api/v1/my/tasks`).slice(-2).map((q) => q.body.folder), [given, undefined]);
+    assert.match(r.stdout, /^Started TASK-9: Fix it \(estimate 20 minutes\)\. It wasn't filed in "A \/ B \/ C \/ D \/ E": /m);
+    assert.match(r.stdout, why);
+    ok(`${prefix}: the task is added without the project, and start says why`);
+  }
 
   // Subtasks: --parent files the new task under an existing one; when that can't be done, it's filed on its own.
   const startOut = (home, args, prefix) => {
@@ -382,6 +419,14 @@ try {
   since = requests().length;
   assert.match(run(h, at('ok'), 'status').stdout, /Waiting to send: nothing/);
   assert.equal(sentSince(since).length, 3); ok('key fixed: everything kept is sent');
+
+  h = fresh('away-path');
+  r = run(h, DOWN, 'start', '--session', 'o', '--estimate', '15', '--folder', 'A / B / C / D / E', 'Fix the cart');
+  assert.match(r.stdout, /^Saved "Fix the cart"/);
+  since = requests().length;
+  assert.match(run(h, at('badpath'), 'status').stdout, /Waiting to send: nothing/);
+  assert.deepEqual(sentSince(since).filter((q) => q.url.endsWith('/my/tasks')).map((q) => q.body.folder), ['A / B / C / D / E', undefined]);
+  assert.equal(outbox(h).length, 0); ok('kept with a path that is refused later: the task is still sent, without it');
 
   h = fresh('offline-slow');
   run(h, DOWN, 'start', '--session', 'w', '--estimate', '5', 'Slow');

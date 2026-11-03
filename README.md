@@ -90,6 +90,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | When | What happens in Task Queue |
 |------|----------------------------|
 | You ask for new work | The agent runs `start` with a title, a one- or two-sentence description of the work and its estimate. A task is created in your queue and started, in a folder named after your project. Its description is the agent's, followed by your request (unless prompt text is off). |
+| You say the work belongs in another project or a subproject | The agent adds `--folder "<project>"` or `--folder "<project> / <subproject>"` to `start`, e.g. `--folder "Business System / Aivals"`. Names match ignoring case, and a level that doesn't exist yet is made. A single name is always a top-level project, so a subproject takes its whole path. When a path can't be used (more than 4 levels, say), the task is added without it and `start` says why. |
 | You say the work is part of an existing task | The agent adds `--parent <task number>` to `start`, and the new task is filed as a subtask of that task. Adding subtasks needs *Edit tasks* in that workspace, as in the app. When the task can't go there (no *Edit tasks*, that task is a subtask itself or closed, or an older Task Queue), it's filed on its own and `start` says why. |
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
@@ -114,7 +115,7 @@ If the key stops working, the agent tells you once and carries on. Changes kept 
 
 ## Privacy
 
-- **Your project's name goes to Task Queue** as the folder each task is filed in: the name of the git repository the agent works in, or else of its working folder (never your home folder). Working in `D:\Stars PH`, tasks go to the folder Stars PH, made the first time it's needed. The agent can pass `--folder "<name>"` to file a task elsewhere. Run `set folders off` to keep project names out; tasks then go to the default folder.
+- **Your project's name goes to Task Queue** as the folder each task is filed in: the name of the git repository the agent works in, or else of its working folder (never your home folder). Working in `D:\Stars PH`, tasks go to the folder Stars PH, made the first time it's needed. The agent can pass `--folder "<name>"` to file a task elsewhere, or `--folder "<project> / <subproject>"` to file it in a subproject. Run `set folders off` to keep project names out; tasks then go to the default folder.
 - **Your request and your follow-up prompts go to Task Queue, where admins can read them,** along with the agent's titles and summaries. Don't paste secrets into requests while tracking is on. Run `set prompt-text off` to keep your prompts out; titles and summaries are still sent.
 - **The tracker checks in with Task Queue** at the start of each session, and when you turn tracking off or on. A check-in says which agent it runs in, the plugin version, whether tracking is on and the workspace it logs to; never prompts or project names. Admins see on the audit log when tracking is connected, paused or resumed, and when a tracker stops checking in for several days (removed, blocked, or simply not used).
 - **What Task Queue couldn't receive waits on your machine,** in `~/.task-queue/outbox`, until it's sent. It's the same text that would have been sent.
@@ -135,7 +136,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set estimate <minutes>` | Sets the estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
 | `set folders on\|off` | Sets whether tasks are filed in a folder named after the project (default on) |
-| `start --estimate <minutes> --description "<text>" [--folder "<name>"] [--parent <task number>] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. `--parent` files the new task as a subtask of an existing task. |
+| `start --estimate <minutes> --description "<text>" [--folder "<project>[ / <subproject>]"] [--parent <task number>] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. `--folder` files it in a project or subproject. `--parent` files the new task as a subtask of an existing task. |
 | `delete <task number or id>` | Deletes a task, with its notes and files. It needs *Delete tasks* in that workspace and can't be undone. By number it finds tasks assigned to you; give the id for anyone else's. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.

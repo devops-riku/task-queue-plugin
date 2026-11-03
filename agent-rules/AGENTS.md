@@ -28,6 +28,7 @@ After that, these are your commands:
 | When | Run |
 |------|-----|
 | New work, before anything else | `node ~/.task-queue/tq.mjs start --estimate <minutes> --description "<what the work is, in one or two sentences>" --folder "<project name>" "<short title>"` |
+| New work in a subproject | Write `--folder "<project name> / <subproject name>"` in `start`, e.g. `--folder "Business System / Aivals"`. A single name is always a top-level project |
 | New work that's part of an existing task | Add `--parent <its task number>` to `start`, e.g. `--parent TASK-000120`, to file it as a subtask of that task |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
@@ -36,6 +37,8 @@ After that, these are your commands:
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
 `start` prints the task number, e.g. `Started TASK-000123: Fix the login redirect (estimate 20 minutes).` `done` prints when the task ended and how long it took against your estimate.
+
+Project names match ignoring case, and a level that doesn't exist yet is made, so use the names the user gives. If a path can't be used (more than 4 levels, say), the task is added without it and `start` says why; that still counts as opened.
 
 With `--parent`, `start` says whose subtask the task is. Adding subtasks needs *Edit tasks* in that workspace. If the task can't go under that one, it's filed on its own and `start` says why; that still counts as opened.
 
@@ -58,6 +61,8 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
    ```json
    {"title": "<short title>", "description": "<what the work is, in one or two sentences>", "folder": "<project name>", "category": "<TASK_QUEUE_CATEGORY>", "estimate_minutes": <your estimate>, "workspace_id": "<TASK_QUEUE_WORKSPACE, if set>"}
    ```
+   For a subproject, send its path: `"folder": "<project name> / <subproject name>"`. If `folder` is refused (a 422 naming it, or a 409 starting `FOLDER_`), send it again without `folder`.
+
    To file it as a subtask of an existing task, add `"parent": "<its task number, e.g. TASK-000120>"`. That needs *Edit tasks* in the workspace; if it's refused (403, 404, or 409 `SUBTASK_DEPTH`, `TASK_CLOSED`, `INVALID_TRANSITION`, or 422 `TOO_MANY_SUBTASKS`), send it again without `parent`.
 
    From the response, keep:
