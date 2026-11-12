@@ -96,6 +96,10 @@ const fake = spawn(process.execPath, ['-e', `
         r.statusCode = 403;
         return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Deleting a task needs the Delete tasks permission in its workspace.' }));
       }
+      if (q.url.startsWith('/nopause/') && b && JSON.parse(b).paused !== undefined) {
+        r.statusCode = 422;
+        return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'paused: Extra inputs are not permitted' }));
+      }
       if (q.url.startsWith('/nodelete/') && q.method === 'DELETE') { r.statusCode = 405; return r.end(JSON.stringify({ detail: 'Method Not Allowed' })); } // an older Task Queue
       if (q.url.startsWith('/revoked')) { r.statusCode = 401; return r.end(JSON.stringify({ code: 'INVALID_API_KEY', message: 'This API key was revoked.' })); }
       if (q.url.startsWith('/keyed') && q.method === 'GET' && q.url.endsWith('/my/tasks')) {
@@ -500,6 +504,27 @@ try {
   assert.equal(r.status, 1); assert.match(r.stderr, /No task TASK-404 found/); ok('delete: an unknown number is not found');
   r = run(h, at('nodelete'), 'delete', 'TASK-9');
   assert.equal(r.status, 1); assert.match(r.stderr, /can't delete tasks through the API yet/); ok('delete on an older Task Queue: says to delete it in the app');
+
+  // Pausing: the open task's clock stops while the user is away, and their next prompt resumes it.
+  h = fresh('pause');
+  assert.match(run(h, at('ok'), 'start', '--session', 'p', '--estimate', '30', 'Long job').stdout, /^Started TASK-9/);
+  since = requests().length;
+  r = run(h, at('ok'), 'pause', '--session', 'p');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Paused TASK-9/);
+  assert.deepEqual(requests().slice(since).map((q) => [q.url, q.body]), [['/ok/api/v1/my/tasks/t9', { paused: true }]]);
+  ok('pause: posts paused true to the open task');
+  since = requests().length;
+  assert.match(hook(h, 'prompt', { session_id: 'p', prompt: 'back to it' }, { env: at('ok') }), /pause --session p/);
+  assert.deepEqual(requests().slice(since).filter((q) => q.url.endsWith('/my/tasks/t9')).map((q) => q.body), [{ paused: false }]);
+  ok('the next prompt resumes it, and the guidance says how to pause');
+  r = run(h, at('ok'), 'resume', '--session', 'p');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Resumed TASK-9/); ok('resume: posts paused false');
+  r = run(h, at('nopause'), 'pause', '--session', 'p');
+  assert.equal(r.status, 1); assert.match(r.stderr, /can't pause tasks yet/); ok('pause on an older Task Queue: says so');
+  assert.match(hook(h, 'prompt', { session_id: 'p', prompt: 'more' }, { env: at('nopause') }), /^Task Queue: TASK-9/);
+  ok('an older Task Queue never fails the prompt hook');
+  r = run(fresh('pause-none'), at('ok'), 'pause', '--session', 'x');
+  assert.equal(r.status, 1); assert.match(r.stderr, /No task is open/); ok('pause with no open task: says so');
 } finally {
   fake.kill();
 }

@@ -16,6 +16,9 @@
  *                                                            Open and start a task (with --parent, as a subtask
  *                                                            of that task).
  *   note [--session <id>] "<text>"                           Add a note to the open task.
+ *   pause [--session <id>] | resume [--session <id>]         Pause the open task (its worked time stops while
+ *                                                            nobody works on it), or resume it. The next prompt
+ *                                                            resumes a paused task on its own.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
  *   delete <task number or id>                               Delete a task in Task Queue (needs Delete tasks there).
  *                                                            Only when the user asks: it can't be undone.
@@ -57,7 +60,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.9.0';
+const VERSION = '1.10.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -553,6 +556,19 @@ async function send(s, change, added = () => {}) {
       await post(id, { comment: change.text });
       return 'sent';
     }
+    if (change.op === 'pause' || change.op === 'resume') {
+      try {
+        await post(id, { paused: change.op === 'pause' });
+      } catch (err) {
+        // Not in progress (or blocked for a reason, which a person resumes), or a Task Queue without pausing.
+        if (err.code === 'INVALID_TRANSITION' || err.status === 422) {
+          log(change.op, `${made?.number ?? id}: ${err.code} ${err.message}`);
+          return err.status === 422 ? 'unsupported' : 'refused';
+        }
+        throw err;
+      }
+      return 'sent';
+    }
     // Nor end it before it started: work finished while Task Queue couldn't be reached says when, too.
     const floor = made?.startedAt ?? change.startedAt;
     const body = { ended_at: notBefore(change.endedAt, floor) };
@@ -674,6 +690,25 @@ async function openTask(s, session, { title, estimate, description, folder, pare
 const noteTask = async (s, task, text) =>
   foreign(s, task) ? 'foreign' : deliver(s, { op: 'note', id: task.id ?? null, ref: task.ref ?? null, text: clip(text, COMMENT_MAX) });
 
+/** Pauses (`paused` true) or resumes the open task: 'sent', 'kept' for later, 'gone' (closed or removed in the app),
+ * 'refused' (not in progress, or blocked for a reason), 'unsupported' (a Task Queue without pausing) or 'foreign'. */
+const holdTask = async (s, task, paused) =>
+  foreign(s, task) ? 'foreign' : deliver(s, { op: paused ? 'pause' : 'resume', id: task.id ?? null, ref: task.ref ?? null });
+
+/** A new prompt is work again: resumes the open task if it was paused in Task Queue meanwhile (a no-op otherwise).
+ * Quick and quiet: skipped while Task Queue was just found down, never kept for later, never fails the hook. */
+async function resumeOnPrompt(s, task) {
+  if (!task?.id || foreign(s, task) || !connected(s)) return;
+  const down = readJson(SYNC);
+  if (down && Date.now() - Date.parse(down.failedAt) < RETRY_MS) return;
+  try {
+    await api(s, 'POST', `/my/tasks/${task.id}`, { paused: false }, CHECK_IN_TIMEOUT_MS);
+  } catch (err) {
+    // An older Task Queue (422), a task blocked for a reason, closed or removed: the stop hook sorts those out.
+    if (!unreachable(err) && err.status !== 422) log('prompt', `resume ${task.number ?? task.id}: ${err.code} ${err.message}`);
+  }
+}
+
 /** Completes the conversation's open task at `at` (default now). Returns it with its end time and what came of it:
  * `kept` for later, `gone` (already closed or not found in Task Queue), or `foreign` (opened with another API key,
  * so nothing was sent); or null when no task is open. Either way the conversation has no task afterwards. */
@@ -770,6 +805,7 @@ function guidance(session, task, project) {
     '- If it is new, unrelated work, first run the line below. It closes the open task at the time you last finished replying:',
     `  ${start}`,
     fields,
+    `- If the user says they are stepping away or asks to pause the task, run: ${COMMAND} pause --session ${session} (its worked time stops; their next prompt resumes it).`,
   ].join('\n');
 }
 
@@ -844,6 +880,7 @@ const HOOKS = {
       }
       state = readState(session);
     }
+    if (state.task) await resumeOnPrompt(s, state.task);
     const now = new Date().toISOString();
     writeState(session, { ...state, prompt: { text: prompt, at: now, cwd: input.cwd ?? null }, lastActivity: now });
     tell(host, 'BeforeAgent', guidance(session, state.task, s.folders ? projectOf(input.cwd) : ''));
@@ -1017,6 +1054,30 @@ function estimateOf(flags, s) {
   return { value: n, given: true };
 }
 
+/** pause / resume: the open task's clock, for when the user steps away and comes back. */
+async function hold({ flags }, paused) {
+  const s = loadSettings();
+  if (!connected(s)) fail('Not set up: run setup first.');
+  const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+  await sync(s, { now: true });
+  const state = readState(session);
+  if (!state.task) fail('No task is open.');
+  const word = paused ? 'pause' : 'resume';
+  const outcome = await holdTask(s, state.task, paused).catch((err) => fail(`Could not ${word} the task: ${err.code}: ${err.message}`));
+  if (outcome === 'gone') {
+    writeState(session, { ...state, task: null });
+    fail(`${named(state.task)} was closed or removed in Task Queue: start a new task.`);
+  }
+  if (outcome === 'foreign') fail(`${named(state.task)} was opened with a different API key, which this one can't see.`);
+  if (outcome === 'unsupported') fail(`This Task Queue can't ${word} tasks yet. Ask your admin to update it.`);
+  if (outcome === 'refused') {
+    fail(paused ? `${named(state.task)} isn't in progress, so there's nothing to pause.` : `${named(state.task)} is blocked for a reason: resume it in Task Queue.`);
+  }
+  writeState(session, { ...state, lastActivity: new Date().toISOString() });
+  if (outcome === 'kept') return out(`Saved: ${named(state.task)} will be ${paused ? 'paused' : 'resumed'} once Task Queue answers${keptBecause()}`);
+  out(paused ? `Paused ${named(state.task)}: its worked time stops until it's resumed (the next prompt resumes it).` : `Resumed ${named(state.task)}.`);
+}
+
 const COMMANDS = {
   async setup({ flags }) {
     syncStableCopy();
@@ -1182,6 +1243,14 @@ const COMMANDS = {
     }
     writeState(session, { ...state, lastActivity: new Date().toISOString() });
     out(noted === 'kept' ? `Saved the note on this machine${keptBecause()}` : `Noted on ${state.task.number}.`);
+  },
+
+  async pause(args) {
+    await hold(args, true);
+  },
+
+  async resume(args) {
+    await hold(args, false);
   },
 
   async done({ rest, flags }) {
