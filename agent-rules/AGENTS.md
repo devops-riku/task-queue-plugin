@@ -31,6 +31,7 @@ After that, these are your commands:
 | New work in a subproject | Write `--folder "<project name> / <subproject name>"` in `start`, e.g. `--folder "Platform / API"`. A single name is always a top-level project |
 | New work that's part of an existing task | Add `--parent <its task number>` to `start`, e.g. `--parent TASK-000120`, to file it as a subtask of that task |
 | A note on the open task (optional) | `node ~/.task-queue/tq.mjs note "<text>"` |
+| The user steps away or asks to pause | `node ~/.task-queue/tq.mjs pause`: the task's worked time stops. `resume` (or their next request) carries on |
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
 | The user asks you to delete a task | `node ~/.task-queue/tq.mjs delete <task number>`. Only then: it can't be undone, and it needs *Delete tasks* in that workspace |
 

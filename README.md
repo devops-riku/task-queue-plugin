@@ -137,6 +137,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `set prompt-text on\|off` | Sets whether your prompts are sent |
 | `set folders on\|off` | Sets whether tasks are filed in a folder named after the project (default on) |
 | `start --estimate <minutes> --description "<text>" [--folder "<project>[ / <subproject>]"] [--parent <task number>] "<title>"` / `note "<text>"` / `done "<summary>"` | Opens, notes on or completes a task by hand. Estimates go up to 480 minutes; split longer work into several tasks. `--folder` files it in a project or subproject. `--parent` files the new task as a subtask of an existing task. |
+| `pause` / `resume` | Pauses the open task, so its worked time stops while you're away, or resumes it. Your next prompt resumes a paused task on its own, including one you paused in the Task Queue app. Needs a Task Queue that can pause tasks. |
 | `delete <task number or id>` | Deletes a task, with its notes and files. It needs *Delete tasks* in that workspace and can't be undone. By number it finds tasks assigned to you; give the id for anyone else's. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.

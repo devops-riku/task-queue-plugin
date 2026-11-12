@@ -9,7 +9,7 @@ argument-hint: "[setup | status | enable | disable]"
 Once this is set up, you log your own work in the user's Task Queue queue:
 
 - **New work:** before starting a request that is work (a change, a fix, an investigation, a document), you open a task with your honest estimate of the minutes you need and a one- or two-sentence description of the work. Quick questions and thank-yous get no task.
-- **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes.
+- **Follow-ups on the same work:** these stay on the open task. The user's follow-up prompts are added to it as notes, and each one resumes the task if it was paused in Task Queue.
 - **When the work is finished:** you mark the task done as your last step, which records the end date and time.
 
 Every prompt reminds you whether a task is open, and gives you the exact commands to run. In Claude Code and Codex the plugin approves those tracker commands itself, so they never wait for the user. The plugin also closes tasks you leave open, at the time you last finished replying. That happens when the conversation sits idle past the idle limit (60 minutes), when it ends (exit, `/clear`), or when it's abandoned. Those tasks are noted as not marked done.
@@ -54,6 +54,7 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set estimate <minutes>` | The estimate used when `start` is given none (default 30, at most 480) |
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 | `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
+| `pause` / `resume` | Pauses the open task (its worked time stops while nobody works on it) or resumes it. Run `pause --session <id>` when the user says they're stepping away or asks to pause. Their next prompt resumes it on its own. Needs a Task Queue that can pause tasks; an older one says so. |
 | `delete <task number or id>` | Deletes a task in Task Queue, with its notes and files. See below. |
 
 ## Deleting a task
