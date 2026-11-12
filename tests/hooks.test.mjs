@@ -77,7 +77,7 @@ const fake = spawn(process.execPath, ['-e', `
   const fs = require('fs');
   require('http').createServer((q, r) => {
     let b = ''; q.on('data', (c) => (b += c)); q.on('end', () => {
-      fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null, ...(q.method === 'DELETE' ? { method: 'DELETE' } : {}) }) + '\\n');
+      fs.appendFileSync(${JSON.stringify(REQS)}, JSON.stringify({ url: q.url, body: b ? JSON.parse(b) : null, ...(['DELETE', 'PATCH'].includes(q.method) ? { method: q.method } : {}) }) + '\\n');
       r.setHeader('content-type', 'application/json');
       if (q.url.startsWith('/slow')) return; // accepts the request and never answers
       if (q.url.startsWith('/down')) { r.statusCode = 503; r.setHeader('content-type', 'text/html'); return r.end('<h1>503 Service Unavailable</h1>'); } // a proxy, its server down
@@ -95,6 +95,23 @@ const fake = spawn(process.execPath, ['-e', `
         if (q.url.endsWith('/my/tasks/t9')) { r.statusCode = 204; return r.end(); }
         r.statusCode = 403;
         return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Deleting a task needs the Delete tasks permission in its workspace.' }));
+      }
+      if (q.method === 'GET' && q.url.includes('/my/tasks/by-number/')) {
+        if (q.url.startsWith('/nomove/')) { r.statusCode = 404; return r.end(JSON.stringify({ detail: 'Not Found' })); }
+        const number = decodeURIComponent(q.url.split('/').pop()).toUpperCase();
+        if (number !== 'TASK-42') { r.statusCode = 404; return r.end(JSON.stringify({ code: 'NOT_FOUND', message: 'Task not found.' })); }
+        return r.end(JSON.stringify({ link: { url: 'http://tq/api/v1/my/tasks/t42' }, task: { task_number: 'TASK-42', title: 'Pool work' } }));
+      }
+      if (q.method === 'PATCH') {
+        const body = JSON.parse(b);
+        if (q.url.startsWith('/nomove/') && (body.column || 'assignee' in body)) {
+          r.statusCode = 422;
+          return r.end(JSON.stringify({ code: 'VALIDATION_ERROR', message: 'column: Extra inputs are not permitted' }));
+        }
+        if (body.column === 'Nope') { r.statusCode = 422; return r.end(JSON.stringify({ code: 'UNKNOWN_COLUMN', message: 'No column "Nope" on the board. Its columns: In Queue, In Progress, For QA.' })); }
+        const status = body.column === 'Done' ? 'COMPLETED' : 'assignee' in body && body.assignee === null ? 'OPEN' : 'IN_PROGRESS';
+        const id = q.url.split('/').pop();
+        return r.end(JSON.stringify({ task: { task_number: id === 't42' ? 'TASK-42' : 'TASK-9', status, assigned_to: body.assignee ? 'Bob Dev' : null }, applied: Object.keys(body) }));
       }
       if (q.url.startsWith('/nopause/') && b && JSON.parse(b).paused !== undefined) {
         r.statusCode = 422;
@@ -525,6 +542,41 @@ try {
   ok('an older Task Queue never fails the prompt hook');
   r = run(fresh('pause-none'), at('ok'), 'pause', '--session', 'x');
   assert.equal(r.status, 1); assert.match(r.stderr, /No task is open/); ok('pause with no open task: says so');
+
+  // Moving and assigning: the open task, or one named by its number (looked up through Task Queue).
+  h = fresh('moves');
+  assert.match(run(h, at('ok'), 'start', '--session', 'm', '--estimate', '30', 'Long job').stdout, /^Started TASK-9/);
+  since = requests().length;
+  r = run(h, at('ok'), 'move', '--session', 'm', 'For QA');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Moved TASK-9 to For QA\. It's in progress now\./);
+  assert.deepEqual(requests().slice(since).filter((q) => q.method === 'PATCH').map((q) => [q.url, q.body]), [['/ok/api/v1/my/tasks/t9', { column: 'For QA' }]]);
+  ok('move: the open task, to a column by name');
+  since = requests().length;
+  r = run(h, at('ok'), 'move', 'task-42', 'In Progress', '--folder', 'Website / Checkout', '--reason', 'Picked up');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Moved TASK-42 to In Progress and into Website \/ Checkout\./);
+  assert.deepEqual(requests().slice(since).filter((q) => q.method === 'PATCH').map((q) => [q.url, q.body]),
+    [['/ok/api/v1/my/tasks/t42', { column: 'In Progress', folder: 'Website / Checkout', reason: 'Picked up' }]]);
+  ok('move: a task named by its number, with a project and a reason');
+  r = run(h, at('ok'), 'move', '--session', 'm', 'Nope');
+  assert.equal(r.status, 1); assert.match(r.stderr, /UNKNOWN_COLUMN: No column "Nope".*Its columns: In Queue, In Progress, For QA/); ok('move: an unknown column lists the board columns');
+  since = requests().length;
+  r = run(h, at('ok'), 'assign', 'TASK-42', 'bob@example.com', '--reason', 'Bob knows checkout');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Assigned TASK-42 to Bob Dev\./);
+  assert.deepEqual(requests().slice(since).filter((q) => q.method === 'PATCH').map((q) => q.body), [{ assignee: 'bob@example.com', reason: 'Bob knows checkout' }]);
+  ok('assign: to a member by email, with a reason');
+  r = run(h, at('ok'), 'assign', 'TASK-42', 'none');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /TASK-42 is back in the Task Pool/);
+  assert.deepEqual(requests().at(-1).body, { assignee: null }); ok('assign none: back to the pool');
+  r = run(h, at('ok'), 'move', '--session', 'm', 'Done');
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /completed now/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h, 'sessions', 'm.json'), 'utf8')).task, null); ok('move to Done: the conversation has no open task now');
+  r = run(h, at('ok'), 'move', 'TASK-404', 'Done');
+  assert.equal(r.status, 1); assert.match(r.stderr, /No task TASK-404 found/); ok('move: an unknown number is not found');
+  assert.match(run(h, at('nomove'), 'start', '--session', 'o', '--estimate', '5', 'Old server work').stdout, /^Started TASK-9/);
+  r = run(h, at('nomove'), 'assign', '--session', 'o', 'bob@example.com');
+  assert.equal(r.status, 1); assert.match(r.stderr, /can't assign tasks through the API yet/); ok('assign on an older Task Queue: says so');
+  r = run(h, at('ok'), 'move');
+  assert.equal(r.status, 1); assert.match(r.stderr, /Usage: move/); ok('move with nothing to do: usage');
 } finally {
   fake.kill();
 }

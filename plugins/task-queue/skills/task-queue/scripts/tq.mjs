@@ -20,6 +20,12 @@
  *                                                            nobody works on it), or resume it. The next prompt
  *                                                            resumes a paused task on its own.
  *   done [--session <id>] "<summary>"                        Complete it now (alias: finish).
+ *   move [<task number or id>] "<column>" [--folder "<project>[ / <subproject>]"] [--reason "<why>"]
+ *                                                            Move a task (the open one when none is named) to a board
+ *                                                            column, as dragging it on the board does, and/or file it
+ *                                                            in another project.
+ *   assign [<task number or id>] <email|me|none> [--reason "<why>"]
+ *                                                            Assign a task to a member, to yourself, or back to the pool.
  *   delete <task number or id>                               Delete a task in Task Queue (needs Delete tasks there).
  *                                                            Only when the user asks: it can't be undone.
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
@@ -60,7 +66,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.10.0';
+const VERSION = '1.11.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -93,6 +99,7 @@ const SUMMARY_MAX = 2000;
 const PROMPT_MAX = 16000;
 const COMMENT_MAX = 5000;
 const NOTE_MAX = 4000;
+const REASON_MAX = 1000;
 const MANUAL = 'manual';
 
 /** How the agent runs this tracker: the stable copy, quoted only when the path needs it. */
@@ -404,6 +411,13 @@ async function findTask(s, ref) {
       throw err;
     }
   }
+  try {
+    const doc = await api(s, 'GET', `/my/tasks/by-number/${encodeURIComponent(ref)}`);
+    return { id: doc.link.url.split('/').pop(), number: doc.task.task_number, title: doc.task.title };
+  } catch (err) {
+    if (err.status !== 404) throw err;
+  }
+  // Not found, or a Task Queue without lookup by number: the tasks assigned to you.
   const list = await api(s, 'GET', '/my/tasks?status=all');
   const task = (list.tasks ?? []).find((t) => t.task_number.toUpperCase() === ref.toUpperCase());
   return task ? { id: task.id, number: task.task_number, title: task.title } : null;
@@ -1054,6 +1068,31 @@ function estimateOf(flags, s) {
   return { value: n, given: true };
 }
 
+const looksLikeTask = (text) => UUID.test(text) || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(text);
+
+/** The task a move names, or the conversation's open task when it names none. */
+async function taskToMove(s, ref, session) {
+  if (ref) {
+    const task = await findTask(s, ref).catch((err) => fail(`Could not look up ${ref}: ${err.code}: ${err.message}`));
+    if (!task) fail(`No task ${ref} found that you may change.`);
+    return task;
+  }
+  const open = readState(session).task;
+  if (!open) fail('No task is open here: name one, e.g. TASK-000123.');
+  if (!open.id) fail(`${named(open)} isn't in Task Queue yet (it's kept on this machine until Task Queue answers): try again later.`);
+  return open;
+}
+
+/** PATCHes the task: its document, or a failure that says why. */
+async function changeTask(s, task, body, word) {
+  try {
+    return await api(s, 'PATCH', `/my/tasks/${task.id}`, body);
+  } catch (err) {
+    if (err.status === 422 && /Extra inputs/.test(err.message)) fail(`This Task Queue can't ${word} tasks through the API yet. Do it in Task Queue.`);
+    fail(`${named(task)} wasn't ${word === 'move' ? 'moved' : 'assigned'}: ${err.code}: ${err.message}`);
+  }
+}
+
 /** pause / resume: the open task's clock, for when the user steps away and comes back. */
 async function hold({ flags }, paused) {
   const s = loadSettings();
@@ -1275,6 +1314,44 @@ const COMMANDS = {
     const took = `took ${minutes(closed.startedAt, closed.endedAt)} of the ${closed.estimate} minutes estimated`;
     if (closed.kept) return out(`Saved the completion of "${closed.title}" (ended ${when(closed.endedAt)}, ${took}) on this machine${keptBecause()}`);
     out(`Completed ${closed.number}: ${closed.title}, ended ${when(closed.endedAt)} (${took}).`);
+  },
+
+  async move({ rest, flags }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    const folder = typeof flags.folder === 'string' ? flags.folder.trim() : '';
+    let [ref, ...words] = rest;
+    // One word alone is the column for the open task, unless it names a task and a project is given.
+    if (!words.length && !(folder && ref && looksLikeTask(ref))) [ref, words] = [null, ref ? [ref] : []];
+    const column = words.join(' ').trim();
+    if (!column && !folder) fail('Usage: move [<task number>] "<column>" [--folder "<project>"] [--reason "<why>"]');
+    await sync(s, { now: true });
+    const task = await taskToMove(s, ref, session);
+    const body = { ...(column ? { column } : {}), ...(folder ? { folder: folderPath(folder) } : {}) };
+    if (typeof flags.reason === 'string' && flags.reason.trim()) body.reason = clip(flags.reason.trim(), REASON_MAX);
+    const doc = await changeTask(s, task, body, 'move');
+    // Done or handed back: no longer this conversation's open task.
+    if (['COMPLETED', 'OPEN'].includes(doc.task.status)) forgetTask(task.id);
+    const where = [column && `to ${column}`, folder && `into ${folderPath(folder)}`].filter(Boolean).join(' and ');
+    out(`Moved ${doc.task.task_number} ${where}. It's ${doc.task.status.toLowerCase().replace('_', ' ')} now.`);
+  },
+
+  async assign({ rest, flags }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const session = typeof flags.session === 'string' ? flags.session : MANUAL;
+    const [ref, who] = rest.length >= 2 ? [rest[0], rest[1]] : [null, rest[0]];
+    if (!who) fail('Usage: assign [<task number>] <email|me|none> [--reason "<why>"]');
+    await sync(s, { now: true });
+    const task = await taskToMove(s, ref, session);
+    const assignee = ['none', 'pool', 'nobody'].includes(who.toLowerCase()) ? null : who;
+    const body = { assignee };
+    if (typeof flags.reason === 'string' && flags.reason.trim()) body.reason = clip(flags.reason.trim(), REASON_MAX);
+    const doc = await changeTask(s, task, body, 'assign');
+    // Someone else's now, or back in the pool: no longer this conversation's open task.
+    if (assignee !== 'me') forgetTask(task.id);
+    out(assignee === null ? `${doc.task.task_number} is back in the Task Pool.` : `Assigned ${doc.task.task_number} to ${doc.task.assigned_to ?? assignee}.`);
   },
 
   async delete({ rest }) {

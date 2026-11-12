@@ -55,6 +55,8 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `set prompt-text on\|off` | Whether the request and follow-up prompts are sent |
 | `set folders on\|off` | Whether tasks are filed in a folder named after the project (default on) |
 | `pause` / `resume` | Pauses the open task (its worked time stops while nobody works on it) or resumes it. Run `pause --session <id>` when the user says they're stepping away or asks to pause. Their next prompt resumes it on its own. Needs a Task Queue that can pause tasks; an older one says so. |
+| `move [<task number>] "<column>" [--folder "<project>"] [--reason "<why>"]` | Moves a task (the open one when none is named) to a board column by name, as on the board: In Progress starts or resumes it, Blocked needs `--reason`, Done completes it (the reason is the completion note), or one of the project board's own columns. `--folder` files it in another project. Only when the user asks. If it's refused, tell the user the reason it printed (it lists the board's columns for an unknown one). |
+| `assign [<task number>] <email\|me\|none> [--reason "<why>"]` | Assigns a task to a member by email, to the user (`me`), or back to the Task Pool (`none`). Only when the user asks. Needs *Assign tasks* in Task Queue, except handing back the user's own task. |
 | `delete <task number or id>` | Deletes a task in Task Queue, with its notes and files. See below. |
 
 ## Deleting a task
