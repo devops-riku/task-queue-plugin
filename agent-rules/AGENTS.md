@@ -18,8 +18,10 @@ Use a short, plain summary of the work as the title. Never put secrets or pasted
 You need Node 18 or later. The user sets it up once, outside the agent, from a clone of the `task-queue-plugin` repository:
 
 ```
-node <clone>/plugins/task-queue/skills/task-queue/scripts/tq.mjs setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>
+node <clone>/plugins/task-queue/skills/task-queue/scripts/tq.mjs login --url <Task Queue address> --category <VALUE>
 ```
+
+`login` prints a code and opens Task Queue in the browser; approve it there (check the code matches) and the tracker saves an API key of its own. With a key you made yourself (Profile → Connect → API keys), use `setup --url <Task Queue API URL> --key <personal API key> --category <VALUE>` instead.
 
 Setup puts the tracker at `~/.task-queue/tq.mjs`. To switch to another API key, run setup again with it. The tasks the old key has open, in every conversation, are closed under the old key first, at the agent's last reply, since the new key can't see them; setup names any it couldn't close. A key changed any other way (by hand, or in an environment variable) leaves those tasks as they are: the agent opens new ones and nothing is sent for the old ones.
 
@@ -54,7 +56,7 @@ This uses the same API the script calls. It needs these environment variables:
 | Variable | Value |
 |----------|-------|
 | `TASK_QUEUE_URL` | The Task Queue API base, e.g. `http://localhost:8000/api/v1` |
-| `TASK_QUEUE_API_KEY` | A personal API key (Task Queue → Profile → API keys), made for the workspace your tasks go to |
+| `TASK_QUEUE_API_KEY` | A personal API key (Task Queue → Profile → Connect → API keys), made for the workspace your tasks go to |
 | `TASK_QUEUE_CATEGORY` | A category value, e.g. `FEATURE` |
 | `TASK_QUEUE_WORKSPACE` | A workspace id. Only needed with an older key, made before keys had a workspace, when you belong to more than one. |
 
