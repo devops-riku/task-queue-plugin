@@ -37,6 +37,7 @@ After that, these are your commands:
 | The work is finished, as your last step | `node ~/.task-queue/tq.mjs done "<one-line summary of what you did>"` |
 | The user asks you to move a task to a board column or project | `node ~/.task-queue/tq.mjs move [<task number>] "<column>" [--folder "<project>"] [--reason "<why>"]` |
 | The user asks you to assign a task | `node ~/.task-queue/tq.mjs assign [<task number>] <email\|me\|none> [--reason "<why>"]` |
+| The user asks you to work on an existing Task Queue task | `node ~/.task-queue/tq.mjs show <task number>` first, and read its comments. When it was reassigned to the user, they say what was done and found before the hand-off |
 | The user asks you to delete a task | `node ~/.task-queue/tq.mjs delete <task number>`. Only then: it can't be undone, and it needs *Delete tasks* in that workspace |
 
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
