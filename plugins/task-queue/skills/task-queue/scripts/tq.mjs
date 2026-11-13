@@ -30,6 +30,8 @@
  *                                                            in another project.
  *   assign [<task number or id>] <email|me|none> [--reason "<why>"]
  *                                                            Assign a task to a member, to yourself, or back to the pool.
+ *   show <task number or id>                                 Print a task with its comments and files, and say when it
+ *                                                            was reassigned to its assignee (read the comments first).
  *   delete <task number or id>                               Delete a task in Task Queue (needs Delete tasks there).
  *                                                            Only when the user asks: it can't be undone.
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
@@ -71,7 +73,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.12.1';
+const VERSION = '1.12.2';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -805,6 +807,7 @@ function guidance(session, task, project) {
     '  Write the title and description in plain words for the people who review the work: no secrets, each on one line, without $, backticks or backslashes.',
     ...(project ? [`  The task is filed in the Task Queue folder "${project}", after this project. To file it under another project, add --folder "<project name>"; under a subproject, --folder "<project name> / <subproject name>".`] : []),
     '  If the user says the work is part of an existing Task Queue task, add --parent <its task number> to file it as a subtask of that task.',
+    `  To work on an existing Task Queue task, first read it and its comments with: ${COMMAND} show <its task number>. When it was reassigned to the user, the comments say what was done and found before the hand-off.`,
   ].join('\n');
   if (!task) {
     return [
@@ -1433,6 +1436,34 @@ const COMMANDS = {
     out(assignee === null ? `${doc.task.task_number} is back in the Task Pool.` : `Assigned ${doc.task.task_number} to ${doc.task.assigned_to ?? assignee}.`);
   },
 
+  /** Prints a task with its comments, and says so when it reached its assignee from someone else's queue, so the
+   * agent reads what was done and found before the hand-off. Read only. */
+  async show({ rest }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const ref = rest.join(' ').trim();
+    if (!ref) fail('Usage: show <task number or id>, e.g. show TASK-000120');
+    await sync(s, { now: true });
+    const task = await findTask(s, ref).catch((err) => fail(`Could not look up ${ref}: ${err.code}: ${err.message}`));
+    if (!task) fail(`No task ${ref} found. By number, only tasks assigned to you are found: for anyone else's, give the task's id.`);
+    const doc = await api(s, 'GET', `/my/tasks/${task.id}`).catch((err) => fail(`Could not read ${ref}: ${err.code}: ${err.message}`));
+    const t = doc.task;
+    const status = t.status.toLowerCase().replace('_', ' ');
+    const lines = [`${t.task_number} "${t.title}": ${status}${t.assigned_to ? `, assigned to ${t.assigned_to}` : ', in the Task Pool'}.`];
+    if (doc.reassigned) lines.push(doc.reassigned.note);
+    if (t.description) lines.push('', 'Description:', t.description);
+    if (t.acceptance_criteria) lines.push('', 'Acceptance criteria:', t.acceptance_criteria);
+    const notes = doc.comments ?? [];
+    lines.push('', notes.length ? `Comments (${notes.length}, oldest first):` : 'No comments.');
+    for (const c of notes) {
+      const files = c.files?.length ? ` [files: ${c.files.join(', ')}]` : '';
+      lines.push(`- ${when(c.created_at)}, ${c.author}: ${c.body || '(files only)'}${files}`);
+    }
+    const files = (doc.attachments ?? []).map((a) => a.filename);
+    if (files.length) lines.push('', `Files: ${files.join(', ')}`);
+    out(lines.join('\n'));
+  },
+
   async delete({ rest }) {
     const s = loadSettings();
     if (!connected(s)) fail('Not set up: run setup first.');
@@ -1467,7 +1498,7 @@ COMMANDS.finish = COMMANDS.done;
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: login, setup, set, workspaces, status, enable, disable, start, note, done, delete, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: login, setup, set, workspaces, status, enable, disable, start, note, pause, resume, done, move, assign, show, delete, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);

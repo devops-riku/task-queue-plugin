@@ -96,6 +96,16 @@ const fake = spawn(process.execPath, ['-e', `
         r.statusCode = 403;
         return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Deleting a task needs the Delete tasks permission in its workspace.' }));
       }
+      if (q.url.startsWith('/show/') && q.method === 'GET' && q.url.endsWith('/my/tasks/t42')) {
+        // TASK-42 reached its assignee by a reassignment, with a comment from before the hand-off.
+        return r.end(JSON.stringify({
+          link: { url: 'http://tq/api/v1/my/tasks/t42' },
+          task: { task_number: 'TASK-42', title: 'Pool work', status: 'QUEUED', assigned_to: 'Bob Dev', description: 'Fix the login page.' },
+          comments: [{ author: 'Alice Dev', body: 'Fails only on Safari', created_at: '2026-11-13T01:00:00Z', files: ['trace.txt'] }],
+          attachments: [{ filename: 'trace.txt' }],
+          reassigned: { from_user: 'Alice Dev', by: 'Ada Admin', comment_count: 1, note: 'Reassigned to Bob Dev from Alice Dev by Ada Admin. Read its 1 comment before starting.' },
+        }));
+      }
       if (q.method === 'GET' && q.url.includes('/my/tasks/by-number/')) {
         if (q.url.startsWith('/nomove/')) { r.statusCode = 404; return r.end(JSON.stringify({ detail: 'Not Found' })); }
         const number = decodeURIComponent(q.url.split('/').pop()).toUpperCase();
@@ -521,6 +531,16 @@ try {
   assert.equal(r.status, 1); assert.match(r.stderr, /No task TASK-404 found/); ok('delete: an unknown number is not found');
   r = run(h, at('nodelete'), 'delete', 'TASK-9');
   assert.equal(r.status, 1); assert.match(r.stderr, /can't delete tasks through the API yet/); ok('delete on an older Task Queue: says to delete it in the app');
+
+  // Reading a task: its comments, and the hand-off when it was reassigned. Read only, so the plugin approves it.
+  h = fresh('show');
+  assert.ok(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: `${tracker(h)} show TASK-42` } })).hookSpecificOutput); ok('show is approved by the plugin');
+  r = run(h, at('show'), 'show', 'task-42');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^TASK-42 "Pool work": queued, assigned to Bob Dev\.\nReassigned to Bob Dev from Alice Dev by Ada Admin\. Read its 1 comment before starting\./);
+  assert.match(r.stdout, /Comments \(1, oldest first\):\n- .+, Alice Dev: Fails only on Safari \[files: trace\.txt\]/);
+  assert.ok(!requests().some((q) => q.url.startsWith('/show/') && (q.method === 'PATCH' || q.method === 'DELETE'))); ok('show: the task, its hand-off and its comments, nothing changed');
+  assert.match(hook(h, 'prompt', { session_id: 'sh', prompt: 'work on TASK-42' }, { env: READY }), /first read it and its comments with: .+ show <its task number>/); ok('guidance: read an existing task with show first');
 
   // Pausing: the open task's clock stops while the user is away, and their next prompt resumes it.
   h = fresh('pause');

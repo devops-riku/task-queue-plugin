@@ -106,6 +106,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | You follow up on the same work | Your follow-up is added to the open task as a note |
 | You ask for something unrelated | The agent runs `start` for the new work. The previous task is closed at the time the agent last finished replying. |
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
+| You ask the agent to work on an existing task | The agent runs `show <task number>` first and reads the task with its comments. When the task was reassigned to you, it's told who had it, who moved it and why, so it reads what was done and found before the hand-off. |
 | You ask the agent to delete a task | The agent runs `delete <task number>`. It can't be undone, so the plugin doesn't approve it: your agent's own permission rules decide whether you're asked. Task Queue deletes it only if your role has *Delete tasks* in that workspace. |
 | You ask a quick question or say thanks | Nothing |
 
@@ -151,6 +152,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `pause` / `resume` | Pauses the open task, so its worked time stops while you're away, or resumes it. Your next prompt resumes a paused task on its own, including one you paused in the Task Queue app. Needs a Task Queue that can pause tasks. |
 | `move [<task number>] "<column>" [--folder "<project>"] [--reason "<why>"]` | Moves a task (the open one when you name none) to a board column by name, as dragging it on the board does: start it, block it (needs a reason), resume it, complete it (the reason becomes the completion note), move it back (`"In Queue"`: back in its assignee's queue, not started, the time so far kept; the pool with a reason), or move it between a project board's own columns. `--folder` files it in another project. By number it finds any task you may see. Reopening is done in Task Queue. |
 | `assign [<task number>] <email\|me\|none> [--reason "<why>"]` | Assigns a task to a member, to yourself, or back to the Task Pool (`none`). Needs *Assign tasks*, except handing back your own task. |
+| `show <task number or id>` | Prints a task with its description, comments and files, and says when it was reassigned to its assignee (who had it, who moved it, why). Read only. |
 | `delete <task number or id>` | Deletes a task, with its notes and files. It needs *Delete tasks* in that workspace and can't be undone. By number it finds tasks assigned to you; give the id for anyone else's. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
