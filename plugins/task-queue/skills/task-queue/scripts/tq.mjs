@@ -9,6 +9,10 @@
  * task is open and what to run) and close what it leaves open: a conversation idle past the idle limit, one
  * that ends (exit, /clear), or one abandoned without ending, at the time the agent last finished replying.
  *
+ *   login --url <Task Queue URL> [--no-browser] [--category <VALUE>]
+ *                                                            Sign this machine in through the browser: it prints a
+ *                                                            code and opens Task Queue, the user approves it there,
+ *                                                            and the tracker receives an API key of its own.
  *   setup --url <api url> --key <api key> [--workspace <id>] [--category <VALUE>]
  *   set <workspace|category|estimate|idle|prompt-text> <value>
  *   workspaces | status | enable | disable
@@ -45,6 +49,7 @@
  * TASK_QUEUE_API_KEY, TASK_QUEUE_WORKSPACE and TASK_QUEUE_CATEGORY override the settings. No dependencies:
  * Node 18 or later.
  */
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -66,7 +71,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.11.0';
+const VERSION = '1.12.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -831,13 +836,13 @@ function setupRequest(session, s) {
   const state = readState(session);
   if (state.setupAsked) return null;
   writeState(session, { ...state, setupAsked: true });
-  const missing = connected(s) ? 'the category for tracked work' : 'their Task Queue API URL and personal API key';
+  const missing = connected(s) ? 'the category for tracked work' : 'to be connected to their Task Queue';
   return [
     `The Task Queue tracker is installed but not set up: it still needs ${missing}. Before working on the first request, finish the setup:`,
-    '1. Ask the user for their Task Queue API URL (e.g. http://localhost:8000/api/v1) and their personal API key (Task Queue: Profile, API keys, made for the workspace their tasks should go to; it starts with tqk_). The key is saved only on this machine; never repeat it back or write it anywhere else.',
-    `2. Run: ${COMMAND} setup --url <url> --key <key>`,
+    '1. Ask the user for their Task Queue address (e.g. https://tasks.example.com).',
+    `2. Run: ${COMMAND} login --url <address>  (give it a 10-minute timeout, or run it in the background). It opens Task Queue in the browser: tell the user to check that the page shows the same code, pick the workspace their tasks go to, and approve. It then saves an API key of its own on this machine. If the user would rather paste a personal API key (Task Queue: Profile, Connect, API keys; it starts with tqk_), run ${COMMAND} setup --url <url> --key <key> instead, and never repeat the key back or write it anywhere else.`,
     `3. If it lists several workspaces (only an older key, made before keys had a workspace, does), ask the user which one and run: ${COMMAND} set workspace <workspace id>`,
-    `4. Ask which category the tasks go under (setup lists them) and run: ${COMMAND} set category <VALUE>`,
+    `4. Ask which category the tasks go under (login or setup lists them) and run: ${COMMAND} set category <VALUE>`,
     `If the user does not want tracking, run: ${COMMAND} disable`,
   ].join('\n');
 }
@@ -1025,7 +1030,7 @@ function settle(s, me, flags = {}) {
   if (!addable.length) {
     fail(
       'This API key can’t add tasks in any workspace it works in: that needs a membership there with Take tasks or Create tasks. ' +
-        'Make a key for a workspace you’re a member of (Task Queue: Profile, API keys), or ask a Task Queue admin.',
+        'Sign in again with login and pick a workspace you’re a member of (or make a key for one under Profile → Connect), or ask a Task Queue admin.',
     );
   }
   let workspace = addable.find((w) => w.id === (flags.workspace ?? s.workspace)) ?? null;
@@ -1117,34 +1122,108 @@ async function hold({ flags }, paused) {
   out(paused ? `Paused ${named(state.task)}: its worked time stops until it's resumed (the next prompt resumes it).` : `Resumed ${named(state.task)}.`);
 }
 
+/** Opens a link in the default browser, quietly: the link is printed as well, for when it can't. */
+function openBrowser(link) {
+  const [cmd, args] =
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', `"${link}"`]] : process.platform === 'darwin' ? ['open', [link]] : ['xdg-open', [link]];
+  try {
+    // Verbatim on Windows: Node would otherwise escape start's empty "" title into something else.
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true, windowsVerbatimArguments: process.platform === 'win32' });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    /* no browser here: the printed link does */
+  }
+}
+
+/** A POST to Task Queue without a key (the browser sign-in), as JSON. */
+async function anonymous(url, route, body) {
+  let res;
+  try {
+    res = await fetch(url + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    throw new ApiError(0, 'UNREACHABLE', `Task Queue at ${url} didn't answer (${err.cause?.code ?? err.name}).`);
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(res.status, data?.code ?? `HTTP_${res.status}`, data?.message ?? res.statusText);
+  return data;
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/** Saves a key as setup does: checks it, closes what an older key had open, and says what's next. */
+async function connectWith(url, key, flags) {
+  let s = loadSettings();
+  const old = s;
+  s = { ...s, url, key };
+  const me = await account(s);
+  const { addable, workspace, changes } = settle(s, me, flags);
+  // Another key: what the old one opened is closed there first, since the new one can't see it.
+  const handed = connected(old) && keyIdOf(old) !== keyIdOf(s) ? await handOver(old) : { closed: [], left: [] };
+  s = saveSettings({ url, key, ...changes, enabled: true });
+  const next = [];
+  if (handed.closed.length) next.push(`Closed under the old API key: ${handed.closed.map(named).join(', ')}.`);
+  if (handed.left.length) {
+    next.push(
+      `Still open under the old API key, which was refused or didn't answer: ${handed.left.map(named).join(', ')}. ` +
+        'Close them in Task Queue under that account.',
+    );
+  }
+  if (!workspace) next.push('Next: choose the workspace with  set workspace <workspace id>', ...describeWorkspaces(addable));
+  else if (!s.category) next.push(`Next: choose the category with  set category <VALUE>  (in ${workspace.name}: ${workspace.categories.map((c) => c.value).join(', ')})`);
+  if (ready(s)) next.push(RELOAD_HINT);
+  out(`Connected as ${me.user}.`);
+  summary(s, next);
+}
+
 const COMMANDS = {
+  async login({ flags }) {
+    syncStableCopy();
+    const s = loadSettings();
+    const raw = typeof flags.url === 'string' ? flags.url : s.url;
+    if (!raw) fail('Give the address: login --url <your Task Queue address>, e.g. https://tasks.example.com');
+    const url = normalizeUrl(raw);
+    const client = `Task Queue tracker on ${os.hostname()}`.slice(0, 60);
+    let started;
+    try {
+      started = await anonymous(url, '/auth/cli/start', { client });
+    } catch (err) {
+      if (err.status === 404 || err.status === 405) fail('This Task Queue can’t sign in from a terminal yet. Use setup --url <url> --key <API key> with a key from Profile → Connect.');
+      fail(`Could not start signing in: ${err.code}: ${err.message}`);
+    }
+    out(
+      `To connect, open this link and check that it shows the code ${started.user_code}, then approve:`,
+      `  ${started.verification_url_complete}`,
+      `(Or open ${started.verification_url} on any device where you're signed in and type the code.) Waiting for approval…`,
+    );
+    if (flags['no-browser'] !== true) openBrowser(started.verification_url_complete);
+    const until = Date.now() + started.expires_in * 1000;
+    while (Date.now() < until) {
+      await sleep(started.interval * 1000);
+      let got;
+      try {
+        got = await anonymous(url, '/auth/cli/token', { device_code: started.device_code });
+      } catch (err) {
+        if (err.status === 429 || err.code === 'UNREACHABLE') continue;
+        fail(`Signing in failed: ${err.code}: ${err.message}`);
+      }
+      if (got.status === 'pending') continue;
+      if (got.status === 'denied') fail('The sign-in was denied in the browser. Nothing was saved.');
+      if (got.status === 'expired') fail('The sign-in expired or was used already. Run login again.');
+      out(`Approved: the key "${got.key_name}" works in ${got.workspace.name}. You can revoke it in Task Queue under Profile → Connect.`);
+      return connectWith(url, got.api_key, { ...flags, workspace: got.workspace.id });
+    }
+    fail('Nobody approved the sign-in within 10 minutes. Run login again.');
+  },
+
   async setup({ flags }) {
     syncStableCopy();
-    let s = loadSettings();
+    const s = loadSettings();
     const url = flags.url ? normalizeUrl(flags.url) : s.url;
     const key = typeof flags.key === 'string' ? flags.key.trim() : s.key;
-    if (!url || !key) fail('Give both: setup --url <Task Queue API URL> --key <personal API key>');
-    if (!key.startsWith('tqk_')) fail('That isn’t a Task Queue API key: keys start with tqk_. Generate one under Profile → API keys.');
-    const old = s;
-    s = { ...s, url, key };
-    const me = await account(s);
-    const { addable, workspace, changes } = settle(s, me, flags);
-    // Another key: what the old one opened is closed there first, since the new one can't see it.
-    const handed = connected(old) && keyIdOf(old) !== keyIdOf(s) ? await handOver(old) : { closed: [], left: [] };
-    s = saveSettings({ url, key, ...changes, enabled: true });
-    const next = [];
-    if (handed.closed.length) next.push(`Closed under the old API key: ${handed.closed.map(named).join(', ')}.`);
-    if (handed.left.length) {
-      next.push(
-        `Still open under the old API key, which was refused or didn't answer: ${handed.left.map(named).join(', ')}. ` +
-          'Close them in Task Queue under that account.',
-      );
-    }
-    if (!workspace) next.push('Next: choose the workspace with  set workspace <workspace id>', ...describeWorkspaces(addable));
-    else if (!s.category) next.push(`Next: choose the category with  set category <VALUE>  (in ${workspace.name}: ${workspace.categories.map((c) => c.value).join(', ')})`);
-    if (ready(s)) next.push(RELOAD_HINT);
-    out(`Connected as ${me.user}.`);
-    summary(s, next);
+    if (!url || !key) fail('Give both: setup --url <Task Queue API URL> --key <personal API key> (or sign in with login --url <url>)');
+    if (!key.startsWith('tqk_')) fail('That isn’t a Task Queue API key: keys start with tqk_. Generate one under Profile → Connect.');
+    return connectWith(url, key, flags);
   },
 
   async set({ rest }) {
@@ -1388,7 +1467,7 @@ COMMANDS.finish = COMMANDS.done;
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: setup, set, workspaces, status, enable, disable, start, note, done, delete, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: login, setup, set, workspaces, status, enable, disable, start, note, done, delete, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);

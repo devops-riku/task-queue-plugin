@@ -26,7 +26,7 @@ You need four things:
 
 - **A Task Queue server with `POST /my/tasks`.** That's the personal API's "Add a task" endpoint. Your Task Queue's **API docs** page (`/docs`) lists it if it's there.
 - **The Take tasks (or Create tasks) permission** in the workspace your tasks should go to. Members have Take tasks by default.
-- **A personal API key**, from Task Queue → Profile → API keys, made for that workspace. A key works in the one workspace it's made for.
+- **A sign-in from the browser** (the tracker's `login` gets an API key of its own once you approve it), or a personal API key from Task Queue → Profile → Connect → API keys, made for that workspace. A key works in the one workspace it's made for.
 - **Node 18 or later** on the machine the agent runs on.
 
 ## Install
@@ -61,10 +61,13 @@ Then start a new session. **Gemini CLI doesn't let an extension approve commands
 
 ## Set up
 
-Send your next prompt. The tracker notices it isn't set up yet, and the agent asks you for:
+Send your next prompt. The tracker notices it isn't set up yet, and the agent asks you for your Task Queue address, e.g. `https://tasks.example.com`. Then it runs `login`, which works like `gh auth login`:
 
-1. your Task Queue API URL, e.g. `http://localhost:8000/api/v1`. The Personal API link from your profile works too.
-2. your personal API key.
+1. It prints a code and opens Task Queue in your browser (sign in there if you aren't).
+2. Check that the page shows the same code, pick the workspace your tasks go to, and approve.
+3. The tracker receives an API key of its own and saves it on this machine, in `~/.task-queue/config.json`. The key is listed under Profile → Connect → API keys, where you can revoke it.
+
+No browser on that machine? Open the printed link on any device where you're signed in, or open `/connect/cli` there and type the code. If you'd rather paste a key you made yourself, the agent runs `setup --url <url> --key <key>` instead.
 
 Then it asks:
 
@@ -75,11 +78,19 @@ To switch to another API key, run setup again with it. The tasks the old key has
 
 That's the only time it asks. In Claude Code and Codex, the agent never stops to ask permission for the tracker: the plugin approves its own commands. It approves exactly one run of the tracker, with nothing chained, piped or substituted. Any other command goes through the agent's normal permission check.
 
-To keep the key out of the chat, run setup yourself in a terminal. The plugin's hooks keep a copy of the tracker at `~/.task-queue/tq.mjs` (in PowerShell, write `$HOME` instead of `~`):
+You can also connect it yourself in a terminal. The plugin's hooks keep a copy of the tracker at `~/.task-queue/tq.mjs` (in PowerShell, write `$HOME` instead of `~`):
+
+```
+node ~/.task-queue/tq.mjs login --url https://tasks.example.com --category FEATURE
+```
+
+Or with a key you made yourself, which keeps it out of the chat:
 
 ```
 node ~/.task-queue/tq.mjs setup --url http://localhost:8000/api/v1 --key tqk_… --category FEATURE
 ```
+
+The MCP server ([task-queue-mcp](https://github.com/devops-riku/task-queue-mcp)) reads the same settings, so a machine connected here needs nothing more for it.
 
 In Claude Code you can also say "set up Task Queue tracking", or run `/task-queue:task-queue setup`.
 

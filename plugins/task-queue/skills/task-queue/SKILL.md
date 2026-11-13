@@ -1,7 +1,7 @@
 ---
 name: task-queue
 description: Set up, check, pause or resume Task Queue tracking, which logs your work for the user as tasks in their Task Queue account (you open a task with your own estimate when new work starts, and mark it done when it's finished) so their admins can see AI coding activity. Use when the tracker plugin says it isn't set up, or when the user wants to connect Task Queue, give their API URL or personal API key, choose the workspace or category, stop sending prompt text, turn tracking off or on, or check that it works.
-argument-hint: "[setup | status | enable | disable]"
+argument-hint: "[login | setup | status | enable | disable]"
 ---
 
 # Task Queue tracking
@@ -26,15 +26,12 @@ Elsewhere (Codex, Gemini CLI), run `scripts/tq.mjs` next to this file, or the co
 
 Do these in order when tracking isn't set up, or when the user asks to set it up again.
 
-1. **Ask the user for two things in one message:**
-   - Their Task Queue API URL, e.g. `http://localhost:8000/api/v1`. The link from Task Queue's Profile → Personal API (`…/api/v1/my/tasks`) works too.
-   - Their personal API key, generated in Task Queue under Profile → API keys for the workspace their tasks should go to (**Works in**). It starts with `tqk_`. A key works in that one workspace only.
+1. **Ask the user for their Task Queue address**, e.g. `https://tasks.example.com` (the API path is added for you; the link from Profile → Connect → Personal API, `…/api/v1/my/tasks`, works too).
+2. **Sign in through the browser: run `login --url <address>`.** It prints a code and a link and opens Task Queue in the browser. Tell the user to check that the page shows the same code, pick the workspace their tasks should go to, and approve. The command waits for that (up to 10 minutes; in Claude Code give the command a 10-minute timeout, or run it in the background), then saves an API key of its own on this machine, in `~/.task-queue/config.json`, and puts a copy of the tracker at `~/.task-queue/tq.mjs`, the path your start and done commands use. The key shows under Profile → Connect → API keys, where the user can revoke it. With no browser on this machine, pass `--no-browser` and give the user the printed link to open on another device.
 
-   Tell them the key is saved only on this machine, in `~/.task-queue/config.json`. If they'd rather keep it out of the chat, they can run setup themselves by typing:
-   `! node "${CLAUDE_SKILL_DIR}/scripts/tq.mjs" setup --url <url> --key <key>`
-2. **Run `setup --url <url> --key <key>`.** It checks the key, saves the settings, and puts a copy of the tracker at `~/.task-queue/tq.mjs`, the path your start and done commands use. Never repeat the key back or write it anywhere else.
-3. **If setup asks for a workspace** (only an older key, made before keys had a workspace, covers several), show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
-4. **Ask which category the tasks go under.** Offer the values setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
+   **With a key instead:** if the user already has a personal API key (Profile → Connect → API keys, made for the workspace their tasks should go to; it starts with `tqk_`), or their Task Queue is too old for `login` (it says so), run `setup --url <address> --key <key>`. If they'd rather keep the key out of the chat, they can type `! node "${CLAUDE_SKILL_DIR}/scripts/tq.mjs" setup --url <url> --key <key>` themselves. Never repeat a key back or write it anywhere else.
+3. **If login or setup asks for a workspace** (only an older key, made before keys had a workspace, covers several), show the user the workspaces it listed and ask which one. Then run `set workspace <workspace id>`.
+4. **Ask which category the tasks go under.** Offer the values login or setup printed, suggest one that fits coding work (e.g. `FEATURE`), then run `set category <VALUE>`.
 
 To switch to another API key, run `setup --key <new key>` (and `--url` if Task Queue moved). The tasks the old key has open, in every conversation, are closed under the old key first, at the agent's last reply, since the new key can't see them; setup names any it couldn't close. A key changed any other way (by hand, or in an environment variable) leaves those tasks as they are: the agent opens new ones and nothing is sent for the old ones. Pass on any tasks setup says it couldn't close.
 5. **Tell the user what gets sent:** each task's title and estimate, their request as its description, their follow-up prompts as notes, and your summary. Admins can read all of it. `set prompt-text off` keeps the request and follow-ups out.
