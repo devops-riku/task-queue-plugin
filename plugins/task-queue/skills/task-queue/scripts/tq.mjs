@@ -1125,9 +1125,10 @@ async function hold({ flags }, paused) {
 /** Opens a link in the default browser, quietly: the link is printed as well, for when it can't. */
 function openBrowser(link) {
   const [cmd, args] =
-    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', link]] : process.platform === 'darwin' ? ['open', [link]] : ['xdg-open', [link]];
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', `"${link}"`]] : process.platform === 'darwin' ? ['open', [link]] : ['xdg-open', [link]];
   try {
-    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    // Verbatim on Windows: Node would otherwise escape start's empty "" title into something else.
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true, windowsVerbatimArguments: process.platform === 'win32' });
     child.on('error', () => {});
     child.unref();
   } catch {
