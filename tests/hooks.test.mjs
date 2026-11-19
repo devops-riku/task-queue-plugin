@@ -104,6 +104,7 @@ const fake = spawn(process.execPath, ['-e', `
           comments: [{ author: 'Alice Dev', body: 'Fails only on Safari', created_at: '2026-11-13T01:00:00Z', files: ['trace.txt'] }],
           attachments: [{ filename: 'trace.txt' }],
           reassigned: { from_user: 'Alice Dev', by: 'Ada Admin', comment_count: 1, note: 'Reassigned to Bob Dev from Alice Dev by Ada Admin. Read its 1 comment before starting.' },
+          board: { name: 'Login', column: 'Ready for QA', columns: ['Pool', 'Queued', 'Ready for QA', 'In progress', 'Blocked', 'Done'] },
         }));
       }
       if (q.method === 'GET' && q.url.includes('/my/tasks/by-number/')) {
@@ -539,6 +540,7 @@ try {
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^TASK-42 "Pool work": queued, assigned to Bob Dev\.\nReassigned to Bob Dev from Alice Dev by Ada Admin\. Read its 1 comment before starting\./);
   assert.match(r.stdout, /Comments \(1, oldest first\):\n- .+, Alice Dev: Fails only on Safari \[files: trace\.txt\]/);
+  assert.match(r.stdout, /\nBoard: Login, in Ready for QA\. Columns for move: Pool, Queued, Ready for QA, In progress, Blocked, Done\.\n/); ok('show: the board as it is now, with its column names for move');
   assert.ok(!requests().some((q) => q.url.startsWith('/show/') && (q.method === 'PATCH' || q.method === 'DELETE'))); ok('show: the task, its hand-off and its comments, nothing changed');
   assert.match(hook(h, 'prompt', { session_id: 'sh', prompt: 'work on TASK-42' }, { env: READY }), /first read it and its comments with: .+ show <its task number>/); ok('guidance: read an existing task with show first');
 

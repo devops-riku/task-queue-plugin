@@ -73,7 +73,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.12.2';
+const VERSION = '1.13.0';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -1451,6 +1451,10 @@ const COMMANDS = {
     const status = t.status.toLowerCase().replace('_', ' ');
     const lines = [`${t.task_number} "${t.title}": ${status}${t.assigned_to ? `, assigned to ${t.assigned_to}` : ', in the Task Pool'}.`];
     if (doc.reassigned) lines.push(doc.reassigned.note);
+    // The board its project uses, read now: boards are customized per project and subproject (columns renamed or
+    // added), so move takes these names. Older Task Queue servers send none.
+    const b = doc.board;
+    if (b?.columns?.length) lines.push(`Board: ${b.name}${b.column ? `, in ${b.column}` : ''}. Columns for move: ${b.columns.join(', ')}.`);
     if (t.description) lines.push('', 'Description:', t.description);
     if (t.acceptance_criteria) lines.push('', 'Acceptance criteria:', t.acceptance_criteria);
     const notes = doc.comments ?? [];
