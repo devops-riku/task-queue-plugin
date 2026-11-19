@@ -73,7 +73,7 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.13.0';
+const VERSION = '1.13.1';
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -322,7 +322,8 @@ function projectOf(cwd) {
 function notBefore(at, floor) {
   const a = Date.parse(at);
   const f = Date.parse(floor);
-  return Number.isNaN(f) || a >= f ? new Date(a).toISOString() : floor;
+  // Equal to the millisecond is not later: the start may carry microseconds the end lacks, so send the start itself.
+  return Number.isNaN(f) || a > f ? new Date(a).toISOString() : floor;
 }
 
 /** Tells Task Queue which agent this tracker runs in, its version and whether tracking is on, so admins can see
