@@ -108,6 +108,7 @@ Every prompt you send comes with a short note for the agent. It says whether a t
 | The agent finishes the work | The agent runs `done` with a one-line summary. The task is completed with the end date and time. |
 | You ask the agent to work on an existing task | The agent runs `show <task number>` first and reads the task with its comments. When the task was reassigned to you, it's told who had it, who moved it and why, so it reads what was done and found before the hand-off. |
 | You ask the agent to delete a task | The agent runs `delete <task number>`. It can't be undone, so the plugin doesn't approve it: your agent's own permission rules decide whether you're asked. Task Queue deletes it only if your role has *Delete tasks* in that workspace. |
+| You ask the agent to delete a comment | The agent runs `show <task number>` for the comment's id, then `delete-comment <task number> <comment id>`. Like `delete`, the plugin doesn't approve it. Task Queue deletes your own comments, or anyone's if your role has *Edit tasks*. |
 | You ask a quick question or say thanks | Nothing |
 
 The agent might not mark a task done. The tracker closes it anyway, at the time the agent last finished replying, and notes that it wasn't marked done. That happens in three cases:
@@ -154,6 +155,7 @@ Ask the agent to run these, or run `node ~/.task-queue/tq.mjs <command>` yoursel
 | `assign [<task number>] <email\|me\|none> [--reason "<why>"]` | Assigns a task to a member, to yourself, or back to the Task Pool (`none`). Needs *Assign tasks*, except handing back your own task. |
 | `show <task number or id>` | Prints a task with its description, comments and files, the board its project uses as it is now (its column and every column `move` can name), and says when it was reassigned to its assignee (who had it, who moved it, why). Read only. |
 | `delete <task number or id>` | Deletes a task, with its notes and files. It needs *Delete tasks* in that workspace and can't be undone. By number it finds tasks assigned to you; give the id for anyone else's. |
+| `delete-comment <task number or id> <comment id>` | Deletes one comment on a task, with its files. `show` prints each comment's id. Your own comments, or anyone's with *Edit tasks*; not on a completed task. It can't be undone. Needs a Task Queue that can delete comments. |
 
 These environment variables override the saved settings: `TASK_QUEUE_URL`, `TASK_QUEUE_API_KEY`, `TASK_QUEUE_WORKSPACE` and `TASK_QUEUE_CATEGORY`.
 

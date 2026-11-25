@@ -93,6 +93,11 @@ const fake = spawn(process.execPath, ['-e', `
       }
       if (q.url.startsWith('/del/') && q.method === 'DELETE') {
         if (q.url.endsWith('/my/tasks/t9')) { r.statusCode = 204; return r.end(); }
+        if (q.url.endsWith('/my/tasks/t9/comments/c0ffee00-0000-4000-8000-000000000001')) { r.statusCode = 204; return r.end(); }
+        if (q.url.includes('/comments/')) {
+          r.statusCode = 403;
+          return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Only the person who wrote this comment, or someone who can edit tasks, can delete it.' }));
+        }
         r.statusCode = 403;
         return r.end(JSON.stringify({ code: 'FORBIDDEN', message: 'Deleting a task needs the Delete tasks permission in its workspace.' }));
       }
@@ -101,7 +106,7 @@ const fake = spawn(process.execPath, ['-e', `
         return r.end(JSON.stringify({
           link: { url: 'http://tq/api/v1/my/tasks/t42' },
           task: { task_number: 'TASK-42', title: 'Pool work', status: 'QUEUED', assigned_to: 'Bob Dev', description: 'Fix the login page.' },
-          comments: [{ author: 'Alice Dev', body: 'Fails only on Safari', created_at: '2026-11-13T01:00:00Z', files: ['trace.txt'] }],
+          comments: [{ id: 'c0ffee00-0000-4000-8000-000000000001', author: 'Alice Dev', body: 'Fails only on Safari', created_at: '2026-11-13T01:00:00Z', files: ['trace.txt'] }],
           attachments: [{ filename: 'trace.txt' }],
           reassigned: { from_user: 'Alice Dev', by: 'Ada Admin', comment_count: 1, note: 'Reassigned to Bob Dev from Alice Dev by Ada Admin. Read its 1 comment before starting.' },
           board: { name: 'Login', column: 'Ready for QA', columns: ['Pool', 'Queued', 'Ready for QA', 'In progress', 'Blocked', 'Done'] },
@@ -533,13 +538,32 @@ try {
   r = run(h, at('nodelete'), 'delete', 'TASK-9');
   assert.equal(r.status, 1); assert.match(r.stderr, /can't delete tasks through the API yet/); ok('delete on an older Task Queue: says to delete it in the app');
 
+  // Deleting a comment: never approved by the plugin either, and Task Queue decides whose comments the account may delete.
+  const COMMENT = 'c0ffee00-0000-4000-8000-000000000001';
+  const command = `${tracker(h)} delete-comment TASK-9 ${COMMENT}`;
+  assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }), '', command);
+  assert.equal(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command } }, { host: 'codex' }), '', command);
+  ok('delete-comment is never approved by the plugin');
+  since = requests().length;
+  r = run(h, at('del'), 'delete-comment', 'TASK-9', COMMENT);
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /^Deleted the comment on TASK-9: Old work\./);
+  assert.deepEqual(requests().slice(since).filter((q) => q.method === 'DELETE').map((q) => q.url), [`/del/api/v1/my/tasks/t9/comments/${COMMENT}`]);
+  ok('delete-comment: by the task number and the comment id');
+  r = run(h, at('del'), 'delete-comment', 'TASK-9', 'c0ffee00-0000-4000-8000-000000000002');
+  assert.equal(r.status, 1); assert.match(r.stderr, /The comment on TASK-9 wasn't deleted: FORBIDDEN: Only the person who wrote this comment/);
+  ok('delete-comment on someone else\'s comment without Edit tasks: refused, with the reason');
+  r = run(h, at('del'), 'delete-comment', 'TASK-9', 'first');
+  assert.equal(r.status, 1); assert.match(r.stderr, /isn't a comment id: show <task number> prints/); ok('delete-comment: a comment id is required');
+  r = run(h, at('nodelete'), 'delete-comment', 'TASK-9', COMMENT);
+  assert.equal(r.status, 1); assert.match(r.stderr, /can't delete comments through the API yet/); ok('delete-comment on an older Task Queue: says to delete it in the app');
+
   // Reading a task: its comments, and the hand-off when it was reassigned. Read only, so the plugin approves it.
   h = fresh('show');
   assert.ok(JSON.parse(hook(h, 'approve', { tool_name: 'Bash', tool_input: { command: `${tracker(h)} show TASK-42` } })).hookSpecificOutput); ok('show is approved by the plugin');
   r = run(h, at('show'), 'show', 'task-42');
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^TASK-42 "Pool work": queued, assigned to Bob Dev\.\nReassigned to Bob Dev from Alice Dev by Ada Admin\. Read its 1 comment before starting\./);
-  assert.match(r.stdout, /Comments \(1, oldest first\):\n- .+, Alice Dev: Fails only on Safari \[files: trace\.txt\]/);
+  assert.match(r.stdout, /Comments \(1, oldest first\):\n- .+, Alice Dev \(comment c0ffee00-0000-4000-8000-000000000001\): Fails only on Safari \[files: trace\.txt\]/);
   assert.match(r.stdout, /\nBoard: Login, in Ready for QA\. Columns for move: Pool, Queued, Ready for QA, In progress, Blocked, Done\.\n/); ok('show: the board as it is now, with its column names for move');
   assert.ok(!requests().some((q) => q.url.startsWith('/show/') && (q.method === 'PATCH' || q.method === 'DELETE'))); ok('show: the task, its hand-off and its comments, nothing changed');
   assert.match(hook(h, 'prompt', { session_id: 'sh', prompt: 'work on TASK-42' }, { env: READY }), /first read it and its comments with: .+ show <its task number>/); ok('guidance: read an existing task with show first');
