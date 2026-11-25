@@ -56,10 +56,13 @@ If the user says they don't want tracking, run `disable`. That stops the trackin
 | `assign [<task number>] <email\|me\|none> [--reason "<why>"]` | Assigns a task to a member by email, to the user (`me`), or back to the Task Pool (`none`). Only when the user asks. Needs *Assign tasks* in Task Queue, except handing back the user's own task. |
 | `show <task number or id>` | Prints a task with its description, comments and files, and the board its project uses as it is now (the column it's in and every column `move` can name). Run it before working on an existing task the user names. When the task was reassigned to the user it says who had it, who moved it and why: read its comments first, since they say what was done and found before the hand-off. |
 | `delete <task number or id>` | Deletes a task in Task Queue, with its notes and files. See below. |
+| `delete-comment <task number or id> <comment id>` | Deletes one comment on a task, with its files. `show` prints each comment's id. See below. |
 
 ## Deleting a task
 
 Run `delete <task number>` (e.g. `delete TASK-000120`) only when the user asks for that task to be deleted. It can't be undone, so the plugin doesn't approve it: the agent's own permission rules decide, as for any other command. By number, only tasks assigned to the user are found; for anyone else's, give the task's id. Deleting needs *Delete tasks* in the task's workspace, which members don't have by default. When it's refused, tell the user the reason `delete` printed and don't try another way.
+
+The same goes for `delete-comment <task number> <comment id>`: only when the user asks for that comment to be deleted, and the plugin doesn't approve it either. Run `show <task number>` first and take the id from the comment's line (`(comment <id>)`). The user can delete their own comments; anyone's needs *Edit tasks*. A completed task's comments stay until it's reopened.
 
 ## Projects and subprojects
 

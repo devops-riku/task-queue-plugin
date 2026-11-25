@@ -39,6 +39,7 @@ After that, these are your commands:
 | The user asks you to assign a task | `node ~/.task-queue/tq.mjs assign [<task number>] <email\|me\|none> [--reason "<why>"]` |
 | The user asks you to work on an existing Task Queue task | `node ~/.task-queue/tq.mjs show <task number>` first, and read its comments. When it was reassigned to the user, they say what was done and found before the hand-off |
 | The user asks you to delete a task | `node ~/.task-queue/tq.mjs delete <task number>`. Only then: it can't be undone, and it needs *Delete tasks* in that workspace |
+| The user asks you to delete a comment on a task | `node ~/.task-queue/tq.mjs show <task number>` to find the comment's id, then `node ~/.task-queue/tq.mjs delete-comment <task number> <comment id>`. Only then: it can't be undone. Their own comments, or anyone's with *Edit tasks* |
 
 In Windows PowerShell, write `$HOME` instead of `~`, e.g. `node $HOME/.task-queue/tq.mjs start --estimate 20 --description "Sign-in sends people back to the home page instead of the page they asked for." "Fix the login redirect"`.
 
@@ -88,6 +89,8 @@ Send `Authorization: Bearer $TASK_QUEUE_API_KEY` and `Content-Type: application/
    ```
 
 Only when the user asks you to delete a task: `DELETE $TASK_QUEUE_URL/my/tasks/<id>`. It answers 204, and can't be undone. It needs *Delete tasks* in the task's workspace (403 otherwise).
+
+Only when the user asks you to delete a comment: `DELETE $TASK_QUEUE_URL/my/tasks/<id>/comments/<comment id>`, with the comment's `id` from the task's `comments`. It answers 204, deletes the comment's files too, and can't be undone. Their own comments, or anyone's with *Edit tasks* in the task's workspace (403 otherwise); a completed task's comments stay (409 `TASK_CLOSED`).
 
 In PowerShell, use `Invoke-RestMethod` or `curl.exe`, never plain `curl`. Every error comes back as JSON with a `code` and a `message`, and the message says what to fix. Your Task Queue's **API docs** page (`/docs`) lists every endpoint.
 

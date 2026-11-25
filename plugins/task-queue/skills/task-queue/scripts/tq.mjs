@@ -34,12 +34,15 @@
  *                                                            was reassigned to its assignee (read the comments first).
  *   delete <task number or id>                               Delete a task in Task Queue (needs Delete tasks there).
  *                                                            Only when the user asks: it can't be undone.
+ *   delete-comment <task number or id> <comment id>          Delete one comment on a task, with its files (yours, or
+ *                                                            anyone's with Edit tasks). show prints the ids. Only when
+ *                                                            the user asks: it can't be undone.
  *   hook <prompt|stop|session-start|session-end|approve> [--host claude|codex|gemini]
  *                                                            Hook entry points: JSON on stdin, never fail.
  *
  * In Claude Code and Codex the agent never has to ask before running the tracker: a hook approves exactly one
- * run of it, with nothing chained, piped, redirected or substituted. `delete` is the exception: it can't be
- * undone, so the agent's own permission rules decide, as for any other command. Gemini CLI doesn't let an extension
+ * run of it, with nothing chained, piped, redirected or substituted. `delete` and `delete-comment` are the
+ * exceptions: they can't be undone, so the agent's own permission rules decide, as for any other command. Gemini CLI doesn't let an extension
  * approve commands, so there the user approves them (or allows them with their own policy).
  *
  * When Task Queue can't be reached, nothing fails: tasks opened, notes and completions are kept in
@@ -73,7 +76,9 @@ const SYNC = path.join(HOME, 'sync.json');
 // Held while one process sends the outbox, so two conversations never send the same change twice.
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
 // The plugin's version, reported in check-ins. Keep it the same as the plugin and extension manifests.
-const VERSION = '1.13.1';
+const VERSION = '1.14.0';
+/** Commands that can't be undone: the approve hook leaves them to the agent's own permission rules. */
+const NEVER_APPROVED = ['delete', 'delete-comment'];
 const TIMEOUT_MS = 5000;
 // Check-ins run while a session starts, so they give up sooner than other calls.
 const CHECK_IN_TIMEOUT_MS = 2500;
@@ -194,7 +199,7 @@ function isTrackerCommand(command) {
   if (token !== null) tokens.push(token);
   if (!/^node(\.exe)?$/i.test(tokens[0] ?? '') || !tokens[1]) return false;
   const target = path.resolve(tokens[1].replace(/^~(?=\/)/, os.homedir())).replace(/\\/g, '/').toLowerCase();
-  return TRACKERS.includes(target) && parseArgs(tokens.slice(2)).rest[0] !== 'delete';
+  return TRACKERS.includes(target) && !NEVER_APPROVED.includes(parseArgs(tokens.slice(2)).rest[0]);
 }
 
 const stateFile = (session) => path.join(SESSIONS, `${String(session).replace(/[^A-Za-z0-9_.-]/g, '_')}.json`);
@@ -1462,7 +1467,9 @@ const COMMANDS = {
     lines.push('', notes.length ? `Comments (${notes.length}, oldest first):` : 'No comments.');
     for (const c of notes) {
       const files = c.files?.length ? ` [files: ${c.files.join(', ')}]` : '';
-      lines.push(`- ${when(c.created_at)}, ${c.author}: ${c.body || '(files only)'}${files}`);
+      // Older Task Queue servers send no comment ids; delete-comment needs one.
+      const id = c.id ? ` (comment ${c.id})` : '';
+      lines.push(`- ${when(c.created_at)}, ${c.author}${id}: ${c.body || '(files only)'}${files}`);
     }
     const files = (doc.attachments ?? []).map((a) => a.filename);
     if (files.length) lines.push('', `Files: ${files.join(', ')}`);
@@ -1486,6 +1493,23 @@ const COMMANDS = {
     out(`Deleted ${task.number}: ${task.title}.`);
   },
 
+  async 'delete-comment'({ rest }) {
+    const s = loadSettings();
+    if (!connected(s)) fail('Not set up: run setup first.');
+    const [ref, comment] = rest.map((r) => r.trim());
+    if (!ref || !comment || rest.length !== 2) fail('Usage: delete-comment <task number or id> <comment id>, e.g. delete-comment TASK-000120 <id from show>');
+    if (!UUID.test(comment)) fail(`${comment} isn't a comment id: show <task number> prints each comment's id.`);
+    const task = await findTask(s, ref).catch((err) => fail(`Could not look up ${ref}: ${err.code}: ${err.message}`));
+    if (!task) fail(`No task ${ref} found. By number, only tasks assigned to you are found: for anyone else's, give the task's id.`);
+    try {
+      await api(s, 'DELETE', `/my/tasks/${task.id}/comments/${comment}`);
+    } catch (err) {
+      if (err.status === 405) fail(`The comment wasn't deleted: this Task Queue can't delete comments through the API yet. Delete it in Task Queue.`);
+      fail(`The comment on ${task.number} wasn't deleted: ${err.code}: ${err.message}`);
+    }
+    out(`Deleted the comment on ${task.number}: ${task.title}.`);
+  },
+
   async hook({ rest, flags }) {
     const handler = HOOKS[rest[0]];
     const host = HOSTS.includes(flags.host) ? flags.host : 'claude';
@@ -1503,7 +1527,7 @@ COMMANDS.finish = COMMANDS.done;
 const { flags, rest } = parseArgs(process.argv.slice(2));
 const name = rest.shift();
 try {
-  if (!COMMANDS[name]) fail('Commands: login, setup, set, workspaces, status, enable, disable, start, note, pause, resume, done, move, assign, show, delete, hook. See the top of this file.');
+  if (!COMMANDS[name]) fail('Commands: login, setup, set, workspaces, status, enable, disable, start, note, pause, resume, done, move, assign, show, delete, delete-comment, hook. See the top of this file.');
   await COMMANDS[name]({ flags, rest });
 } catch (err) {
   console.error(err.message);
